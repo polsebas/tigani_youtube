@@ -1,0 +1,40 @@
+[project]
+name = "tigani-broadcast"
+version = "0.0.0"
+description = "Pipeline de producción visual estilo noticiero para análisis económico de YouTube, componible en OBS Studio 16:9."
+requires-python = ">=3.11"
+dependencies = [
+    "agno",
+    "pydantic>=2",
+]
+
+[project.optional-dependencies]
+# Agno 3.2.1 exige el paquete openai al importar el wrapper de Ollama.
+ollama = ["ollama", "openai"]
+
+[dependency-groups]
+dev = [
+    "pytest>=8",
+    "pytest-cov>=5",
+    "ruff>=0.8",
+]
+
+[tool.uv]
+package = false
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["src"]
+addopts = [
+    "--cov=src",
+    "--cov-report=term-missing",
+    "--cov-fail-under=85",
+]
+
+[tool.ruff]
+target-version = "py311"
+line-length = 100
+src = ["src", "tests"]
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP", "B", "SIM"]
