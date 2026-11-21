@@ -75,6 +75,28 @@ def test_cue_rechaza_campos_extra_y_no_se_puede_mutar() -> None:
         cue.text = "otro"
 
 
+@pytest.mark.parametrize("blank", ["", "   ", "\t"])
+@pytest.mark.parametrize("model", [HardDataMention, DraftHardDataMention])
+def test_time_reference_vacio_se_normaliza_a_none(blank: str, model: type) -> None:
+    if model is HardDataMention:
+        mention = model(
+            cue_index=1,
+            timestamp="00:00:14",
+            indicator_label="inflación",
+            raw_value_text="4,2 por ciento",
+            time_reference=blank,
+        )
+    else:
+        mention = model(
+            cue_index=1,
+            indicator_label="inflación",
+            raw_value_text="4,2 por ciento",
+            time_reference=blank,
+        )
+
+    assert mention.time_reference is None
+
+
 def test_hard_data_acepta_time_reference_opcional_y_conserva_el_texto() -> None:
     sin_periodo = HardDataMention(
         cue_index=1,

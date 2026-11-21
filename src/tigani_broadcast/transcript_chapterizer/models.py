@@ -60,6 +60,12 @@ def _content(value: str) -> str:
     return value
 
 
+def _blank_time_reference(value: object) -> object:
+    if isinstance(value, str) and value.strip() == "":
+        return None
+    return value
+
+
 class HardDataMention(BaseModel):
     """Magnitud dicha en una cue. `raw_value_text` se conserva tal como vino."""
 
@@ -80,6 +86,11 @@ class HardDataMention(BaseModel):
     @classmethod
     def labels_have_content(cls, value: str) -> str:
         return _content(value)
+
+    @field_validator("time_reference", mode="before")
+    @classmethod
+    def empty_time_reference_is_none(cls, value: object) -> object:
+        return _blank_time_reference(value)
 
 
 class VisualSubjectMention(BaseModel):
@@ -144,11 +155,21 @@ class DraftChapter(BaseModel):
 
     model_config = ConfigDict(extra="forbid", strict=True, frozen=True)
 
-    start_cue_index: int = Field(ge=0)
-    end_cue_index: int = Field(ge=0)
-    title: str
-    summary: str
-    suggested_lower_third: str
+    start_cue_index: int = Field(ge=0, description="Primera cue del capítulo, inclusive.")
+    end_cue_index: int = Field(ge=0, description="Última cue del capítulo, inclusive.")
+    title: str = Field(description="Título breve del capítulo, en español de noticiero.")
+    summary: str = Field(
+        description=(
+            "Resumen fiel a lo dicho. Toda cifra relevante que aparezca acá "
+            "tiene que estar también en hard_data."
+        )
+    )
+    suggested_lower_third: str = Field(
+        description=(
+            "Zócalo 16:9 para OBS, máximo 100 caracteres, fiel a lo dicho. "
+            "No mezclar un monto de vencimiento con un monto colocado."
+        )
+    )
 
 
 class DraftHardDataMention(BaseModel):
@@ -156,15 +177,36 @@ class DraftHardDataMention(BaseModel):
 
     model_config = ConfigDict(extra="forbid", strict=True, frozen=True)
 
-    cue_index: int = Field(ge=0)
-    indicator_label: str
-    raw_value_text: str
-    time_reference: str | None = None
+    cue_index: int = Field(
+        ge=0,
+        description="Índice exacto de la cue donde aparece la cifra literal de raw_value_text.",
+    )
+    indicator_label: str = Field(
+        description=(
+            "Nombre de la magnitud, sin el año. Un año de cuatro dígitos va en time_reference, "
+            "nunca acá con time_reference vacío."
+        )
+    )
+    raw_value_text: str = Field(
+        description="Cifra literal dicha en esa cue, sin reescribir separadores ni unidades."
+    )
+    time_reference: str | None = Field(
+        default=None,
+        description=(
+            "Referencia temporal explícita dicha en la cue: hoy, 2015, último mes, "
+            "9 de enero, enero 2018. No la conviertas en una fecha de calendario."
+        ),
+    )
 
     @field_validator("indicator_label", "raw_value_text")
     @classmethod
     def labels_have_content(cls, value: str) -> str:
         return _content(value)
+
+    @field_validator("time_reference", mode="before")
+    @classmethod
+    def empty_time_reference_is_none(cls, value: object) -> object:
+        return _blank_time_reference(value)
 
 
 class DraftVisualSubjectMention(BaseModel):
@@ -172,10 +214,12 @@ class DraftVisualSubjectMention(BaseModel):
 
     model_config = ConfigDict(extra="forbid", strict=True, frozen=True)
 
-    cue_index: int = Field(ge=0)
-    subject_label: str
-    asset_kind: Literal["event_photo", "conceptual_illustration"]
-    context_text: str
+    cue_index: int = Field(ge=0, description="Índice de la cue donde se nombra el sujeto.")
+    subject_label: str = Field(description="Sujeto o evento ilustrable, como se lo nombró.")
+    asset_kind: Literal["event_photo", "conceptual_illustration"] = Field(
+        description="event_photo o conceptual_illustration. No es un dato oficial."
+    )
+    context_text: str = Field(description="Contexto breve dicho en la cue, sin inventar la escena.")
 
     @field_validator("subject_label", "context_text")
     @classmethod
@@ -188,6 +232,76 @@ class DraftChapterizedTranscript(BaseModel):
 
     model_config = ConfigDict(extra="forbid", strict=True, frozen=True)
 
-    chapters: list[DraftChapter] = Field(min_length=1)
-    hard_data: list[DraftHardDataMention] = Field(default_factory=list)
-    visual_subjects: list[DraftVisualSubjectMention] = Field(default_factory=list)
+    chapters: list[DraftChapter] = Field(
+        min_length=1,
+        description="Rangos de cue_index. Sin timestamps y sin menciones adentro.",
+    )
+    hard_data: list[DraftHardDataMention] = Field(
+        default_factory=list,
+        description="Lista plana de cifras. Cada cue_index apunta a la cue de la cifra literal.",
+    )
+    visual_subjects: list[DraftVisualSubjectMention] = Field(
+        default_factory=list,
+        description="Lista plana de sujetos ilustrables, referenciada solo por cue_index.",
+    )
+
+
+class DraftChapterBoundary(BaseModel):
+    """Frontera del paso 1. Solo rango y título, sin cifras ni zócalo."""
+
+    model_config = ConfigDict(extra="forbid", strict=True, frozen=True)
+
+    start_cue_index: int = Field(
+        ge=0,
+        description="Primera cue del bloque, inclusive. El primer bloque arranca en 0.",
+    )
+    end_cue_index: int = Field(
+        ge=0,
+        description="Última cue del bloque, inclusive. El siguiente bloque arranca en end + 1.",
+    )
+    title: str = Field(description="Título breve del bloque temático, en español de noticiero.")
+
+
+class DraftChapterPlan(BaseModel):
+    """Partición del paso 1. Python la rechaza si no cubre todas las cues."""
+
+    model_config = ConfigDict(extra="forbid", strict=True, frozen=True)
+
+    chapters: list[DraftChapterBoundary] = Field(
+        min_length=1,
+        description=(
+            "Bloques temáticos contiguos. En un video de unos 5 minutos, entre 2 y 5 capítulos."
+        ),
+    )
+
+
+class DraftChapterDetails(BaseModel):
+    """Detalle del paso 2. Solo ve las cues de su capítulo."""
+
+    model_config = ConfigDict(extra="forbid", strict=True, frozen=True)
+
+    summary: str = Field(
+        description=(
+            "Resumen fiel al tramo, respetando el signo de cada cifra. "
+            "Si dijo reservas negativas, no las escribas como positivas."
+        )
+    )
+    suggested_lower_third: str = Field(
+        description=(
+            "Zócalo 16:9 para OBS, máximo 100 caracteres, fiel a lo dicho en este tramo. "
+            "Sin texto meta: nada de (sin fecha), N/A ni aclaraciones entre paréntesis."
+        )
+    )
+    hard_data: list[DraftHardDataMention] = Field(
+        default_factory=list,
+        description=(
+            "Cifras dichas en este tramo. cue_index global, indicator_label específico "
+            "y time_reference real, o null si no hubo marca temporal."
+        ),
+    )
+    visual_subjects: list[DraftVisualSubjectMention] = Field(
+        default_factory=list,
+        description=(
+            "Actores, organismos o conceptos clave de este tramo. Lista vacía si no hay sujeto."
+        ),
+    )

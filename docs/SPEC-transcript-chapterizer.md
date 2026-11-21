@@ -132,13 +132,25 @@ El JSON es un ejemplo de forma. No es una serie ni un dato oficial. `asset_kind`
 
 ### 5.3 Menciones
 
-`HardDataMention`: `cue_index` (`>= 0`), `timestamp`, `indicator_label`, `raw_value_text`, `time_reference: str | None = None`. `indicator_label` y `raw_value_text` tienen que seguir teniendo contenido después de `strip()`. `time_reference` no se resuelve a una fecha.
+`HardDataMention`: `cue_index` (`>= 0`), `timestamp`, `indicator_label`, `raw_value_text`, `time_reference: str | None = None`. `indicator_label` y `raw_value_text` tienen que seguir teniendo contenido después de `strip()`. `time_reference` no se resuelve a una fecha. Una cadena vacía o solo con espacios (`""`, `"   "`) se normaliza a `None` antes de guardar, en el borrador y en la mención pública.
 
 `VisualSubjectMention`: `cue_index`, `timestamp`, `subject_label`, `context_text` y `asset_kind` (`event_photo` o `conceptual_illustration`). `subject_label` y `context_text` tienen que seguir teniendo contenido después de `strip()`.
 
 ## 6. Agente
 
-El agente no escribe `chapters.json`. Su `output_schema` es `DraftChapterizedTranscript`, una propuesta interna sin timestamps y sin menciones anidadas en los capítulos:
+El agente no escribe `chapters.json`. `AgnoChapterizer` arma un `Workflow` de Agno 3.2.1 con dos `Step` (`max_retries=0`, `on_error=fail`, `telemetry=False`). El default de Agno es saltear un paso que falla; acá un error aborta el workflow. El paso 1 devuelve un `StepOutput` con el plan; si devolviera el modelo pelado, el paso siguiente recibiría solo su texto. El contrato que se ensambla al final sigue siendo `ChapterizedTranscript`.
+
+El paso 1, `segmentar`, llama a un `Agent` con `output_schema=DraftChapterPlan`. Recibe la transcripción completa, una línea `indice | [HH:MM:SS] texto` por cue, sin el pre-escaneo de cifras. Solo propone fronteras y títulos. Para un video de unos 5 minutos la instrucción pide entre 2 y 5 bloques, sin fragmentar de más. En cuanto vuelve el plan, Python corre `validate_chapter_plan`. Si hay hueco, solape, índice fuera de rango o cobertura incompleta, lanza `ChapterValidationError` y el paso `extraer` no arranca.
+
+El paso 2, `extraer`, corre una vez por capítulo y solo si el plan cerró. Cada llamada recibe únicamente las cues `[start_cue_index..end_cue_index]`, con sus índices globales, más `Cues con cifras detectadas: [...]` de ese tramo. El `Agent` usa `output_schema=DraftChapterDetails`. Tiene que respetar el signo de lo dicho, no poner texto meta en el zócalo (`(sin fecha)`, `N/A`) y catalogar `hard_data` y `visual_subjects` del tramo. Los tres post-hooks corren sobre ese capítulo. `CueGroundingGuardrail` ancla dentro de `[start_cue_index, end_cue_index]`: primero la cue declarada, después una coincidencia única en `±1`, y si ahí no está, una coincidencia única en todo el tramo. Cero apariciones o dos o más cues del capítulo lanzan `OutputCheckError`. Una cifra fuera del tramo no cuenta.
+
+| Modelo interno | Campos |
+|---|---|
+| `DraftChapterBoundary` | `start_cue_index`, `end_cue_index`, `title` |
+| `DraftChapterPlan` | `chapters` (al menos uno) |
+| `DraftChapterDetails` | `summary`, `suggested_lower_third`, `hard_data`, `visual_subjects` |
+
+`DraftChapter` y `DraftChapterizedTranscript` siguen siendo el borrador que entra a `assemble_chapterized_transcript`. No se serializan. El paso 2 arma ese borrador uniendo plan y detalles.
 
 | Modelo | Campos |
 |---|---|
@@ -147,13 +159,19 @@ El agente no escribe `chapters.json`. Su `output_schema` es `DraftChapterizedTra
 | `DraftVisualSubjectMention` | `cue_index`, `subject_label`, `asset_kind`, `context_text` |
 | `DraftChapterizedTranscript` | `chapters` (al menos uno), `hard_data` (default `[]`), `visual_subjects` (default `[]`) |
 
-Esos modelos usan `extra="forbid"`, `strict=True` y `frozen=True`. `asset_kind` sigue siendo `event_photo` o `conceptual_illustration`. `indicator_label`, `raw_value_text`, `subject_label` y `context_text` tienen que tener contenido después de `strip()`. Esta propuesta no se serializa como salida del módulo. Las instrucciones le piden al modelo rangos de `cue_index` y dos listas planas referenciadas solo por `cue_index`: no copia timestamps y no anida menciones.
+Esos modelos usan `extra="forbid"`, `strict=True` y `frozen=True`. `asset_kind` sigue siendo `event_photo` o `conceptual_illustration`. `indicator_label`, `raw_value_text`, `subject_label` y `context_text` tienen que tener contenido después de `strip()`. Esta propuesta no se serializa como salida del módulo. Las instrucciones le piden al modelo rangos de `cue_index` y dos listas planas referenciadas solo por `cue_index`: no copia timestamps y no anida menciones. Incluyen dos ejemplos que separan `indicator_label`, `raw_value_text` y `time_reference`. `time_reference` guarda la marca dicha (`hoy`, `2015`, `último mes`, `9 de enero`, `enero 2018`) y el año no queda en `indicator_label`. `cue_index` es el de la cifra literal. `suggested_lower_third` es un zócalo 16:9 de hasta 100 caracteres y no mezcla un monto de vencimiento con un monto colocado. Toda cifra relevante del `summary` también va en `hard_data`.
 
-`AgnoChapterizer.chapterize` pide ese borrador, lo pasa por `assemble_chapterized_transcript` y devuelve el `ChapterizedTranscript` público de la sección 5. `chapterize_transcript(cues, engine)` rechaza una lista vacía, llama al `ChapterizerEngine` y después corre `validate_chapterized_transcript`. Un motor inyectado puede devolver el contrato público ya armado; el validador lo revisa igual. Si `run(...).content` no es un `DraftChapterizedTranscript`, falla cerrado con `ChapterizerOutputError`.
+`format_cue_lines` deja cada línea `indice | [HH:MM:SS] texto` intacta. `format_chapterizer_input` le agrega `Cues con cifras detectadas: [...]`, con los `cue_index` del tramo cuyo texto tiene un dígito o un `%`. El paso 1 usa solo las líneas. El paso 2 usa las líneas del capítulo más ese pre-escaneo.
+
+Cada `Agent` recibe su `expected_output`. Los post-hooks están solo en el extractor. `CueGroundingGuardrail` normaliza separadores (`8,000`, `8.000` y `8000` coinciden; `2.5` y `2,5` también). Si la cifra está en la cue declarada, el índice no cambia. Si no, mira `[cue_index - 1, cue_index + 1]` recortado al capítulo. Si ahí no hay una coincidencia única, busca una sola aparición en todo el tramo y reancla a esa cue. Cero apariciones o dos o más cues del capítulo lanzan `OutputCheckError`. Una cifra fuera del tramo no cuenta. `TimeReferenceGuardrail` falla si `indicator_label` trae un año `19xx` o `20xx` y `time_reference` es `None`. `LowerThirdLengthGuardrail` falla si el zócalo supera `MAX_LOWER_THIRD_LENGTH` (100). `SummaryHardDataConsistencyGuardrail` falla si `hard_data` está vacío y el `summary` trae una métrica explícita (`2.5%`, `26,000 millones`, dólares, pesos o USD). `SpanishLanguageGuardrail` falla si en `summary` o `suggested_lower_third` hay al menos dos marcas propias del inglés (`the`, `and`, `with`, `including`, `which`, `current`, `previously`, `highlights` y otras del mismo grupo) y superan a las marcas del español. `swap`, `default` y `USD` no cuentan como inglés. El extractor tiene que redactar `summary`, `suggested_lower_third`, `indicator_label`, `subject_label` y `context_text` en español, y una cifra económica no va como `event_photo`.
+
+En Agno 3.2.1 un `OutputCheckError` de un post-hook no sale de `Agent.run`: el run vuelve con `RunStatus.error`. `AgnoChapterizer` también atrapa `OutputCheckError` si el doble de pruebas lo propaga. En los dos casos traduce a `ChapterValidationError` y no ensambla.
+
+`AgnoChapterizer.chapterize` corre el workflow y devuelve el `ChapterizedTranscript` público de la sección 5. `chapterize_transcript(cues, engine)` rechaza una lista vacía, llama al `ChapterizerEngine` y después corre `validate_chapterized_transcript`. Un motor inyectado puede devolver el contrato público ya armado; el validador lo revisa igual. Si un paso no devuelve el modelo que le toca, falla cerrado con `ChapterizerOutputError`.
 
 En Agno 3.2.1 la salida estructurada entra por `output_schema` en `Agent`. Esa versión no tiene `response_model`. `temperature=0.0` se configura sobre el modelo inyectado de `agno.models`, porque `Agent` no recibe ese argumento. El código no importa SDKs crudos de proveedores.
 
-`build_agno_model_from_env()` lee `TIGANI_LLM_PROVIDER` y `TIGANI_LLM_MODEL`. Los wrappers admitidos son `ollama` (`Ollama`), `openai` (`OpenAIChat`), `anthropic` (`Claude`) y `google` (`Gemini`). En Ollama la temperatura va en `options`, porque ese wrapper no declara el campo `temperature`; igual queda en `0.0`. Si falta una variable, el proveedor no está en la lista o el wrapper no carga, el error es `ModelConfigError`. No se hardcodean API keys.
+`build_agno_model_from_env()` lee `TIGANI_LLM_PROVIDER` y `TIGANI_LLM_MODEL`. Los wrappers admitidos son `ollama` (`Ollama`), `openai` (`OpenAIChat`), `anthropic` (`Claude`) y `google` (`Gemini`). En Ollama la temperatura va en `options`, porque ese wrapper no declara el campo `temperature`; igual queda en `0.0`. El mismo wrapper no declara `think`. Con `TIGANI_LLM_PROVIDER=ollama`, `TIGANI_OLLAMA_THINK` es opcional: `true`/`1` o `false`/`0`, sin importar mayúsculas. Si está definida, se manda en `request_params` como `{"think": true|false}`, porque `Client.chat` de Ollama recibe ese argumento y Agno reenvía `request_params`. Si no está definida, no se toca el default del modelo. Un valor inválido es `ModelConfigError`, sale por stderr y el proceso termina con código `1`. Si falta el proveedor, el id, el proveedor no está en la lista o el wrapper no carga, el error también es `ModelConfigError`. No se hardcodean API keys.
 
 El extra opcional `ollama` declara los paquetes `ollama` y `openai`. Agno 3.2.1, al importar el wrapper de Ollama, carga `OllamaResponses` y ese módulo exige el paquete `openai`. El dominio no importa ese SDK. `uv sync --extra ollama` deja el entorno reproducible.
 
@@ -172,7 +190,7 @@ El extra opcional `ollama` declara los paquetes `ollama` y `openai`. Agno 3.2.1,
 7. Cada ítem de `hard_data` y `visual_subjects` tiene su `cue_index` dentro del capítulo, y su `timestamp` es exactamente el de `cues[cue_index]`.
 8. Un capítulo con ambas listas vacías es válido.
 
-No entra en este corte la exigencia de que `raw_value_text` sea un substring de la cue, ni el filtro de dígitos nuevos en el título o el zócalo.
+La partición no exige que `raw_value_text` sea un substring ni filtra dígitos nuevos en el título. El anclaje numérico y el tope del zócalo corren antes, en los post-hooks.
 
 ## 8. Errores
 
@@ -180,8 +198,11 @@ No entra en este corte la exigencia de que `raw_value_text` sea un substring de 
 |---|---|
 | Archivo ilegible, línea inválida, texto vacío, reloj fuera de rango o timestamps decrecientes | `TranscriptFormatError` |
 | Hueco, solape, cobertura incompleta, índice fuera de `0..len(cues)-1`, rango invertido, mención que no cae en un único capítulo, reloj distinto al de la cue o mención mal ubicada | `ChapterValidationError` |
+| Plan del paso 1 con hueco, solape, índice inválido o cobertura incompleta | `ChapterValidationError` antes de invocar el paso 2 |
+| Cifra ausente o repetida en el capítulo, anclaje ambiguo en `±1`, año en `indicator_label` con `time_reference` vacío, zócalo de más de 100 caracteres, resumen con cifras y `hard_data` vacío, o prosa en inglés | `OutputCheckError` dentro del post-hook; `AgnoChapterizer` lo traduce a `ChapterValidationError` cuando `Agent.run` devuelve `RunStatus.error` o cuando la excepción sale del `run` |
+| `TIGANI_OLLAMA_THINK` con un valor distinto de `true`, `false`, `1` o `0` | `ModelConfigError` en stderr, código `1` |
 
-No se reintenta contra un modelo dentro de este módulo. El ensamblado determinista no vuelve a llamar al agente ni corrige un JSON anidado.
+No se reintenta contra un modelo dentro de este módulo. El ensamblado determinista no vuelve a llamar al agente ni corrige un JSON anidado. El reanclaje dentro del capítulo tampoco es un reintento: mueve el `cue_index` en Python y no llama otra vez al modelo.
 
 ## 9. Arquitectura
 
@@ -193,7 +214,8 @@ src/tigani_broadcast/transcript_chapterizer/
   parse.py            # archivo [HH:MM:SS] -> cues
   models.py           # Cue, contrato público y propuesta plana del agente
   validate.py         # validate_chapterized_transcript
-  chapterizer.py      # AgnoChapterizer, assemble_chapterized_transcript, chapterize_transcript
+  guardrails.py       # post_hooks: anclaje, año, zócalo, cifras y español
+  chapterizer.py      # Workflow de 2 pasos, assemble y chapterize_transcript
   render.py           # JSON indent=2 y Markdown
   cli.py              # argparse y build_agno_model_from_env
   __main__.py         # python -m tigani_broadcast.transcript_chapterizer
@@ -202,8 +224,11 @@ tests/transcript_chapterizer/
 
 ```text
 cues = parse(entrada)
-borrador = agente(cues)                 # DraftChapterizedTranscript
-paquete = assemble_chapterized_transcript(borrador, cues)
+plan = segmentar(lineas completas)      # DraftChapterPlan
+validate_chapter_plan(plan, cues)       # si falla, no hay paso 2
+por cada capítulo:
+    detalle = extraer(cues del tramo)   # DraftChapterDetails + post_hooks
+paquete = assemble_chapterized_transcript(plan + detalles, cues)
 render_json(paquete) / render_markdown(paquete)
 ```
 
@@ -229,6 +254,9 @@ Un corte por vez, cada uno con sus tests.
 3. `chapterizer.py` con `ChapterizerEngine`, `AgnoChapterizer` y tests offline. Hecho.
 4. JSON, Markdown, fábrica por entorno y CLI. Hecho. El cliente de YouTube no se implementa ni suma dependencias hasta una aprobación aparte.
 5. Corte 4.1. Propuesta plana del agente, ensamblado determinista de timestamps y menciones, y extra opcional `ollama`. Hecho. Sin reintentos y sin cambio de `chapters.json`.
+6. Corte 4.2. Pre-escaneo de cifras, `expected_output`, ejemplos en las instrucciones y tres post-hooks de Agno. Hecho. Sin otra llamada al modelo y sin cambio de `chapters.json` ni `chapters.md`.
+7. Corte 4.3. Workflow de dos pasos con contexto aislado por capítulo, y `time_reference` vacío normalizado a `None`. Hecho. El contrato público no cambia.
+8. Corte 4.4. `TIGANI_OLLAMA_THINK`, español obligatorio en el extractor, y guardrails de cifras en el resumen y de idioma. Hecho. El contrato público no cambia.
 
 ## 12. Salida a disco y CLI
 

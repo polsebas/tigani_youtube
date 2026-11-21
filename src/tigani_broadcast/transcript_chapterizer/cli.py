@@ -38,6 +38,10 @@ class ModelConfigError(ChapterizerError):
     """Falta el proveedor, el id del modelo, o el wrapper de Agno no carga."""
 
 
+_OLLAMA_THINK_TRUE = frozenset({"true", "1"})
+_OLLAMA_THINK_FALSE = frozenset({"false", "0"})
+
+
 def build_agno_model_from_env(environ: Mapping[str, str] | None = None) -> Model:
     """Arma un modelo de agno.models con temperature 0.0. No lee ni guarda API keys."""
     env = os.environ if environ is None else environ
@@ -60,11 +64,28 @@ def build_agno_model_from_env(environ: Mapping[str, str] | None = None) -> Model
         ) from exc
 
     if provider == "ollama":
-        model = model_cls(id=model_id, options={"temperature": 0.0})
+        # El wrapper no declara `think`. Client.chat sí lo recibe, y request_params se reenvía.
+        kwargs: dict[str, object] = {"id": model_id, "options": {"temperature": 0.0}}
+        think = _ollama_think(env)
+        if think is not None:
+            kwargs["request_params"] = {"think": think}
+        model = model_cls(**kwargs)
     else:
         model = model_cls(id=model_id, temperature=0.0)
     model.temperature = 0.0
     return model
+
+
+def _ollama_think(env: Mapping[str, str]) -> bool | None:
+    if "TIGANI_OLLAMA_THINK" not in env:
+        return None
+    raw = env["TIGANI_OLLAMA_THINK"]
+    value = raw.strip().lower()
+    if value in _OLLAMA_THINK_TRUE:
+        return True
+    if value in _OLLAMA_THINK_FALSE:
+        return False
+    raise ModelConfigError(f"TIGANI_OLLAMA_THINK inválido: {raw!r}. Usá true, false, 1 o 0.")
 
 
 def main(argv: Sequence[str] | None = None, engine: ChapterizerEngine | None = None) -> int:

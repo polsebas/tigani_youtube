@@ -299,6 +299,64 @@ def test_el_modulo_delega_en_main(monkeypatch: pytest.MonkeyPatch) -> None:
     assert exc_info.value.code == 7
 
 
+@pytest.mark.parametrize(
+    ("raw", "expected"),
+    [
+        ("false", False),
+        ("FALSE", False),
+        ("0", False),
+        ("true", True),
+        ("True", True),
+        ("1", True),
+    ],
+)
+def test_ollama_think_se_reenvia_en_request_params(raw: str, expected: bool) -> None:
+    model = build_agno_model_from_env(
+        {
+            "TIGANI_LLM_PROVIDER": "ollama",
+            "TIGANI_LLM_MODEL": "qwen3:8b",
+            "TIGANI_OLLAMA_THINK": raw,
+        }
+    )
+
+    assert model.options == {"temperature": 0.0}
+    assert model.request_params == {"think": expected}
+
+
+def test_ollama_sin_think_deja_el_default_del_wrapper() -> None:
+    model = build_agno_model_from_env(
+        {"TIGANI_LLM_PROVIDER": "ollama", "TIGANI_LLM_MODEL": "qwen3:8b"}
+    )
+
+    assert model.request_params is None
+
+
+def test_ollama_think_invalido() -> None:
+    with pytest.raises(ModelConfigError, match="TIGANI_OLLAMA_THINK inválido"):
+        build_agno_model_from_env(
+            {
+                "TIGANI_LLM_PROVIDER": "ollama",
+                "TIGANI_LLM_MODEL": "qwen3:8b",
+                "TIGANI_OLLAMA_THINK": "quizas",
+            }
+        )
+
+
+def test_ollama_think_invalido_sale_por_stderr(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    monkeypatch.setenv("TIGANI_LLM_PROVIDER", "ollama")
+    monkeypatch.setenv("TIGANI_LLM_MODEL", "qwen3:8b")
+    monkeypatch.setenv("TIGANI_OLLAMA_THINK", "quizas")
+
+    code = main(_argv(tmp_path))
+
+    assert code == EXIT_ERROR
+    assert "TIGANI_OLLAMA_THINK inválido" in capsys.readouterr().err
+
+
 def test_falta_solo_el_id_del_modelo() -> None:
     with pytest.raises(ModelConfigError, match="TIGANI_LLM_MODEL"):
         build_agno_model_from_env({"TIGANI_LLM_PROVIDER": "openai", "TIGANI_LLM_MODEL": "  "})
