@@ -5,6 +5,8 @@ description = "Pipeline de producción visual estilo noticiero para análisis ec
 requires-python = ">=3.11"
 dependencies = [
     "agno",
+    "httpx>=0.28.1",
+    "mcp>=2.3.0",
     "pydantic>=2",
 ]
 
