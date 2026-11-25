@@ -1,5 +1,7 @@
 # Spec: `broadcast-package-builder`
 
+Estado: **v0 cerrado** (contratos, ensamblado portable, `deck.html` OBS, portadas de capítulo, kit de publicación y CLI). 100 % determinista: sin LLM ni red. Cierra el pipeline PoC.
+
 ## 1. Objective
 
 Ensamblar los resultados validados de `transcript-chapterizer` (`chapters.json`), `official-data-charts` (`charts.json`) y `visual-assets-fetcher` (`assets.json`) en un **paquete de producción autocontenido para OBS Studio (16:9)** y **kit de publicación para YouTube y redes sociales**:
@@ -62,13 +64,13 @@ docs/
   SPEC-broadcast-package-builder.md      → Esta especificación
 src/tigani_broadcast/broadcast_package_builder/
   __init__.py                            → API pública del módulo
-  __main__.py                            → Entrypoint `python -m` (Corte 2)
+  __main__.py                            → Entrypoint `python -m`
   models.py                              → Contratos Pydantic (timeline, slides, créditos, manifiesto)
   assemble.py                            → Validación de entradas, ordenamiento y copia portable
-  deck.py                                → Generación de `deck.html` 16:9 y placas separadoras (Corte 2)
-  publishing.py                          → `youtube_description.txt`, `social_post.txt`, `rundown.md` (Corte 2)
-  cli.py                                 → CLI con `argparse` (Corte 2)
-tests/broadcast_package_builder/         → Tests 100 % offline sobre paquetes sintéticos y fixture piloto
+  deck.py                                → Generación de `deck.html` 16:9 y placas separadoras
+  publishing.py                          → `youtube_description.txt`, `social_post.txt`, `rundown.md`
+  cli.py                                 → CLI con `argparse`
+tests/broadcast_package_builder/         → Tests 100 % offline sobre paquetes sintéticos
 
 ```
 
@@ -76,9 +78,9 @@ tests/broadcast_package_builder/         → Tests 100 % offline sobre paquetes 
 
 ```text
 out/package_<video_id>/
-  deck.html                              → Player 16:9 único para OBS Browser Source (Corte 2)
+  deck.html                              → Player 16:9 único para OBS Browser Source
   package.json                           → Manifiesto maestro validado con toda la línea de tiempo
-  rundown.md                             → Escaleta de operación por capítulo y timestamp (Corte 2)
+  rundown.md                             → Escaleta de operación por capítulo y timestamp
   youtube_description.txt                → Descripción lista para YouTube (capítulos + fuentes + licencias CC)
   social_post.txt                        → Texto promocional listo para redes sociales
   slides/
@@ -110,13 +112,13 @@ out/package_<video_id>/
   3. `visual` (imágenes/placas de `visual-assets-fetcher`).
 * **Filtro de placas de error:** por defecto las placas en estado `fetch_error` se excluyen de `slides` / rotación al aire y se registran en `excluded_errors` (también visibles en `rundown.md` con advertencia). Con `--include-errors` entran a la línea de tiempo.
 
-### Reglas del Player OBS (`deck.html`) — Corte 2
+### Reglas del Player OBS (`deck.html`)
 
 * Viewport 16:9 limpio (`1920×1080`), fondo negro `#000`, `<iframe>` a pantalla completa cargando la placa relativa activa (`slides/...`).
 * Controles por teclado: `ArrowRight` / `Space` (siguiente), `ArrowLeft` (anterior), `Home` / `End` (inicio/fin), `H` (mostrar/ocultar barra HUD del operador con número de slide, timestamp, capítulo y título).
 * El HUD inicia **oculto** o discretamente minimizable para que en OBS Browser Source salga la señal limpia al aire, con parámetro opcional `?hud=1` en la URL para modo operador/ensayo.
 
-### Reglas de publicación (`youtube_description.txt` y `social_post.txt`) — Corte 2
+### Reglas de publicación (`youtube_description.txt` y `social_post.txt`)
 
 * **`youtube_description.txt`:**
   1. Resumen breve del episodio (derivado de los capítulos) + fecha de publicación (`charts.publish_date`).
@@ -162,9 +164,9 @@ class PackageSlide(BaseModel):
 * **Niveles de test:**
   * `test_models.py`: contratos de `PackageSlide`, `BroadcastPackageManifest` y validadores *fail-closed*.
   * `test_assemble.py`: ordenamiento determinista (colisión en mismo cue → `chapter_cover` → `chart` → `visual`), copia portable de HTMLs e imágenes preservando rutas relativas, exclusión por defecto de `fetch_error` vs `--include-errors`, `include_chapter_covers=False`, deduplicación de créditos y rechazo *fail-closed* si falta un HTML/imagen o si un `chapter_index` no existe.
-  * `test_deck.py` (Corte 2): `deck.html` 100 % offline (sin CDN), lista ordenada de slides en JSON embebido, escape seguro y portadas de capítulo.
-  * `test_publishing.py` (Corte 2): formato de capítulos YouTube, deduplicación de fuentes/créditos, `social_post.txt` y `rundown.md`.
-  * `test_cli.py` (Corte 2): ejecución E2E sobre fixtures de los 3 módulos.
+  * `test_deck.py`: `deck.html` 100 % offline (sin CDN), lista ordenada de slides en JSON embebido, escape seguro y portadas de capítulo.
+  * `test_publishing.py`: formato de capítulos YouTube, deduplicación de fuentes/créditos, `social_post.txt` y `rundown.md`.
+  * `test_cli.py`: ejecución E2E sobre fixtures de los 3 módulos.
 * **Cobertura mínima:** `>= 85 %` (objetivo > 90 %).
 
 ## 8. Boundaries
@@ -182,4 +184,4 @@ class PackageSlide(BaseModel):
 
 ## 10. Open Questions
 
-Ninguna. Decisiones de v0 cerradas en la sección 5 (portadas activas por defecto con `--no-chapter-covers`; sin Scene Collection OBS en v0).
+Ninguna. Decisiones de v0 cerradas en la sección 5 (portadas activas por defecto con `--no-chapter-covers`; sin Scene Collection OBS en v0). El módulo y el pipeline PoC están implementados.

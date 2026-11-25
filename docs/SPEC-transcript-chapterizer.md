@@ -1,6 +1,6 @@
 # SPEC — `transcript-chapterizer`
 
-Estado: **v0 cerrado** (parser, capítulos, Agno inyectable, JSON/Markdown y CLI). El corte 4.1 separa la propuesta plana del agente del contrato público, sin cambiar `chapters.json`. El cliente de YouTube sigue sin implementarse. No autoriza código de `official-data-charts`, `visual-assets-fetcher` ni `broadcast-package-builder`.
+Estado: **v0 cerrado** (parser, capítulos, Agno inyectable, JSON/Markdown y CLI). El corte 4.1 separa la propuesta plana del agente del contrato público, sin cambiar `chapters.json`. El cliente de YouTube sigue sin implementarse. Este módulo **solo cataloga lo dicho**; los módulos `official-data-charts`, `visual-assets-fetcher` y `broadcast-package-builder` viven en sus propias SPECs (también v0 cerradas en el PoC).
 
 Schema de salida: `transcript-chapterizer/v0`.
 

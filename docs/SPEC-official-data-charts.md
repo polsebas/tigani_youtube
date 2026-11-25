@@ -1,5 +1,7 @@
 # Spec: `official-data-charts`
 
+Estado: **v0 cerrado** (catálogo, proveedores AR/internacionales, resolvedor Agno, métricas, render SVG 16:9, MCP y CLI). Consume `chapters.json` y produce `charts.json` + placas HTML para `broadcast-package-builder`.
+
 ## 1. Objective
 
 Transformar cada `HardDataMention` del `chapters.json` generado por `transcript-chapterizer` en un artefacto periodístico verificable para el paquete de producción en OBS Studio (16:9):

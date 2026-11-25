@@ -1,5 +1,7 @@
 # Spec: `visual-assets-fetcher`
 
+Estado: **v0 cerrado** (dedupe, licencias fail-closed, Wikimedia + Openverse, planner Agno/`--no-llm`, render 16:9, CLI). Consume `chapters.json` y produce `assets.json` + placas/imágenes para `broadcast-package-builder`.
+
 ## 1. Objective
 
 Transformar los `visual_subjects` del `chapters.json` generado por `transcript-chapterizer` en activos visuales verificables, con licencia comercial segura para YouTube y listos para **OBS Studio (16:9)**:
