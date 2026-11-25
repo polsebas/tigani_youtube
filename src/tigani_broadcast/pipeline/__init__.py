@@ -1,5 +1,6 @@
 """Orquestador en proceso de los 4 módulos del pipeline."""
 
+from tigani_broadcast.pipeline.cli import main, run_cli
 from tigani_broadcast.pipeline.models import (
     PipelineConfig,
     PipelineReport,
@@ -17,5 +18,7 @@ __all__ = [
     "StageRunner",
     "StageRunners",
     "StageStatus",
+    "main",
+    "run_cli",
     "run_pipeline",
 ]

@@ -1,6 +1,6 @@
 # Spec: `pipeline-orchestrator`
 
-Estado: **Corte 1 cerrado** (contratos + `run_pipeline` + packaging editable). CLI raíz y `__main__.py` quedan para el Corte 2.
+Estado: **v0 cerrado** (contratos + `run_pipeline` + packaging editable + CLI `tigani-broadcast run` + `__main__.py`).
 
 ## 1. Objective
 
