@@ -1381,8 +1381,8 @@ wheels = [
 
 [[package]]
 name = "tigani-broadcast"
-version = "0.0.0"
-source = { virtual = "." }
+version = "0.1.0"
+source = { editable = "." }
 dependencies = [
     { name = "agno" },
     { name = "httpx" },
