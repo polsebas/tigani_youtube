@@ -1,6 +1,6 @@
 [project]
 name = "tigani-broadcast"
-version = "0.0.0"
+version = "0.1.0"
 description = "Pipeline de producción visual estilo noticiero para análisis económico de YouTube, componible en OBS Studio 16:9."
 requires-python = ">=3.11"
 dependencies = [
