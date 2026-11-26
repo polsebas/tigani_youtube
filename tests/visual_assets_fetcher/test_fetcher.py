@@ -150,6 +150,81 @@ def test_rechaza_nc_svg_y_ancho_menor(tmp_path: Path) -> None:
         fetcher.close()
 
 
+def test_acepta_candidato_sin_dimensiones_si_mime_y_bytes_ok(tmp_path: Path) -> None:
+    image_url = "https://cdn.example/unknown-dims.jpg"
+    providers = {
+        "openverse": _FakeProvider(
+            [
+                _candidate(
+                    provider="openverse",
+                    image_url=image_url,
+                    width=None,
+                    height=None,
+                    raw_license="by 4.0",
+                )
+            ]
+        ),
+        "wikimedia": _FakeProvider([]),
+    }
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(
+            200,
+            content=_image_bytes(),
+            headers={"content-type": "image/jpeg"},
+        )
+
+    fetcher = VisualAssetFetcher(providers, transport=httpx.MockTransport(handler))
+    try:
+        result = fetcher.fetch_for_plan(
+            _plan(provider="openverse"),
+            images_dir=tmp_path / "images",
+            filename_stem="sin_dims",
+        )
+    finally:
+        fetcher.close()
+
+    assert result is not None
+    attribution, path = result
+    assert attribution.width is None
+    assert attribution.height is None
+    assert attribution.mime_type == "image/jpeg"
+    assert path.is_file()
+
+
+def test_search_limit_default_es_20(tmp_path: Path) -> None:
+    seen_limits: list[int] = []
+
+    class _LimitSpy(_FakeProvider):
+        def search(self, query: str, *, limit: int = 10) -> list[VisualCandidate]:
+            seen_limits.append(limit)
+            return super().search(query, limit=limit)
+
+    providers = {
+        "wikimedia": _LimitSpy([_candidate()]),
+        "openverse": _FakeProvider([]),
+    }
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(
+            200,
+            content=_image_bytes(),
+            headers={"content-type": "image/jpeg"},
+        )
+
+    fetcher = VisualAssetFetcher(providers, transport=httpx.MockTransport(handler))
+    try:
+        fetcher.fetch_for_plan(
+            _plan(),
+            images_dir=tmp_path / "images",
+            filename_stem="lim",
+        )
+    finally:
+        fetcher.close()
+
+    assert seen_limits == [20]
+
+
 def test_acepta_retrato_vertical_si_es_unico_valido(tmp_path: Path) -> None:
     image_url = "https://cdn.example/portrait.jpg"
     providers = {

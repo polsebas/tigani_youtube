@@ -64,6 +64,13 @@ def test_render_deck_html_controles_hud_y_escape(tmp_path: Path) -> None:
 
     assert "cdn." not in deck.lower()
     assert "background: #000" in deck
+    assert "pointer-events: none" in deck
+    assert 'tabindex="-1"' in deck
+    assert 'id="stage" tabindex="0"' in deck
+    assert 'window.addEventListener("keydown"' in deck
+    assert "window.focus()" in deck
+    assert 'id="hud-prev"' in deck
+    assert 'id="hud-next"' in deck
     assert "ArrowRight" in deck
     assert 'event.key === " "' in deck
     assert "ArrowLeft" in deck

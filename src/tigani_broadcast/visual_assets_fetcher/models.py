@@ -47,8 +47,8 @@ class VisualAttribution(BaseModel):
     license_url: str | None = None
     source_page_url: str = Field(min_length=1)
     image_url: str = Field(min_length=1)
-    width: int = Field(gt=0)
-    height: int = Field(gt=0)
+    width: int | None = Field(default=None, gt=0)
+    height: int | None = Field(default=None, gt=0)
     mime_type: str = Field(min_length=1)
 
 

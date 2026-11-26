@@ -168,6 +168,7 @@ def render_deck_html(manifest: BroadcastPackageManifest) -> str:
       margin: 0 auto;
       aspect-ratio: 16 / 9;
       background: #000;
+      outline: none;
     }}
     #frame {{
       position: absolute;
@@ -176,6 +177,7 @@ def render_deck_html(manifest: BroadcastPackageManifest) -> str:
       height: 100%;
       border: 0;
       background: #000;
+      pointer-events: none;
     }}
     #hud {{
       position: absolute;
@@ -193,9 +195,27 @@ def render_deck_html(manifest: BroadcastPackageManifest) -> str:
       font-size: clamp(12px, 1.15vw, 18px);
       color: #9db0c3;
       z-index: 2;
+      pointer-events: auto;
     }}
     #hud.visible {{ display: flex; }}
     #hud strong {{ color: #3db8a8; }}
+    #hud .nav {{
+      display: flex;
+      gap: 0.45em;
+      align-items: center;
+    }}
+    #hud button {{
+      pointer-events: auto;
+      cursor: pointer;
+      border: 1px solid #2b3b4d;
+      background: rgba(15, 23, 32, 0.9);
+      color: #f4f7fb;
+      border-radius: 8px;
+      padding: 0.15em 0.55em;
+      font: inherit;
+      line-height: 1.2;
+    }}
+    #hud button:hover {{ border-color: #3db8a8; color: #3db8a8; }}
     .empty {{
       position: absolute;
       inset: 0;
@@ -207,14 +227,19 @@ def render_deck_html(manifest: BroadcastPackageManifest) -> str:
       font-size: clamp(20px, 2.4vw, 36px);
       color: #9db0c3;
       z-index: 1;
+      pointer-events: none;
     }}
   </style>
 </head>
 <body>
-  <div id="stage">
-    <iframe id="frame" title="Placa activa" src="about:blank"></iframe>
+  <div id="stage" tabindex="0">
+    <iframe id="frame" title="Placa activa" src="about:blank" tabindex="-1"></iframe>
     {empty_notice}
     <div id="hud" aria-live="polite">
+      <span class="nav">
+        <button type="button" id="hud-prev" aria-label="Anterior">◀</button>
+        <button type="button" id="hud-next" aria-label="Siguiente">▶</button>
+      </span>
       <span><strong id="hud-index">0/0</strong></span>
       <span id="hud-clock">--:--:--</span>
       <span id="hud-chapter">—</span>
@@ -223,13 +248,23 @@ def render_deck_html(manifest: BroadcastPackageManifest) -> str:
   </div>
   <script>
     const SLIDES = {slides_json};
+    const stage = document.getElementById("stage");
     const frame = document.getElementById("frame");
     const hud = document.getElementById("hud");
     const hudIndex = document.getElementById("hud-index");
     const hudClock = document.getElementById("hud-clock");
     const hudChapter = document.getElementById("hud-chapter");
     const hudTitle = document.getElementById("hud-title");
+    const hudPrev = document.getElementById("hud-prev");
+    const hudNext = document.getElementById("hud-next");
     let index = 0;
+
+    function keepFocus() {{
+      window.focus();
+      if (document.activeElement !== stage) {{
+        stage.focus({{ preventScroll: true }});
+      }}
+    }}
 
     function showHudFromQuery() {{
       const params = new URLSearchParams(window.location.search);
@@ -246,6 +281,7 @@ def render_deck_html(manifest: BroadcastPackageManifest) -> str:
         hudClock.textContent = "--:--:--";
         hudChapter.textContent = "Sin slides";
         hudTitle.textContent = "Rotación vacía";
+        keepFocus();
         return;
       }}
       if (index < 0) index = 0;
@@ -256,6 +292,7 @@ def render_deck_html(manifest: BroadcastPackageManifest) -> str:
       hudClock.textContent = slide.timestamp;
       hudChapter.textContent = "Cap " + (slide.chapter_index + 1) + " · " + slide.chapter_title;
       hudTitle.textContent = slide.title;
+      keepFocus();
     }}
 
     function next() {{
@@ -270,7 +307,23 @@ def render_deck_html(manifest: BroadcastPackageManifest) -> str:
       render();
     }}
 
-    document.addEventListener("keydown", (event) => {{
+    stage.addEventListener("click", (event) => {{
+      if (event.target.closest("#hud")) return;
+      keepFocus();
+    }});
+    frame.addEventListener("load", keepFocus);
+    hudPrev.addEventListener("click", (event) => {{
+      event.preventDefault();
+      event.stopPropagation();
+      prev();
+    }});
+    hudNext.addEventListener("click", (event) => {{
+      event.preventDefault();
+      event.stopPropagation();
+      next();
+    }});
+
+    window.addEventListener("keydown", (event) => {{
       if (event.key === "ArrowRight" || event.key === " ") {{
         event.preventDefault();
         next();
@@ -291,6 +344,7 @@ def render_deck_html(manifest: BroadcastPackageManifest) -> str:
     }});
 
     showHudFromQuery();
+    keepFocus();
     render();
   </script>
 </body>

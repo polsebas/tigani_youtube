@@ -22,8 +22,10 @@ _REJECT_PATTERN = re.compile(
 
 # Normaliza separadores para comparar variantes Wikimedia / Openverse.
 _NON_ALNUM = re.compile(r"[^a-z0-9]+")
-_CC_BY_VERSION = re.compile(r"^(?:cc)?by\d+$")
-_CC_BY_SA_VERSION = re.compile(r"^(?:cc)?bysa\d+$")
+# Sufijos oficiales frecuentes: jurisdicción ISO (ar, us, …) o unported/generic.
+_CC_SUFFIX = r"(?:unported|generic|ported|[a-z]{2})?"
+_CC_BY_VERSION = re.compile(rf"^(?:cc)?by\d+{_CC_SUFFIX}$")
+_CC_BY_SA_VERSION = re.compile(rf"^(?:cc)?bysa\d+{_CC_SUFFIX}$")
 
 
 def is_allowed_mime_type(mime_type: str | None) -> bool:

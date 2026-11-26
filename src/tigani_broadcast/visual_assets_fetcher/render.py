@@ -180,7 +180,7 @@ def _verified_body(
     license_name = html.escape(attr.license_name)
     provider = html.escape(attr.provider)
 
-    is_portrait = attr.height > attr.width
+    is_portrait = attr.width is not None and attr.height is not None and attr.height > attr.width
     if not is_portrait:
         return (
             '  <section class="content single landscape-layout">\n'

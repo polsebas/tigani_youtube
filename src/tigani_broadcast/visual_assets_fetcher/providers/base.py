@@ -49,8 +49,8 @@ class VisualCandidate(BaseModel):
     license_url: str | None = None
     source_page_url: str = Field(min_length=1)
     image_url: str = Field(min_length=1)
-    width: int
-    height: int
+    width: int | None = None
+    height: int | None = None
     mime_type: str | None = None
 
 
@@ -58,7 +58,7 @@ class VisualCandidate(BaseModel):
 class VisualProvider(Protocol):
     """Contrato mínimo de un conector HTTP tipado de búsqueda de imágenes."""
 
-    def search(self, query: str, *, limit: int = 10) -> list[VisualCandidate]:
+    def search(self, query: str, *, limit: int = 20) -> list[VisualCandidate]:
         """Busca candidatos. Fail-closed ante basura HTTP/JSON."""
         ...
 

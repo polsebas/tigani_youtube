@@ -9,6 +9,7 @@ from collections.abc import Callable
 
 import httpx
 
+from tigani_broadcast.visual_assets_fetcher.licenses import is_allowed_mime_type
 from tigani_broadcast.visual_assets_fetcher.providers.base import (
     DEFAULT_TIMEOUT,
     DEFAULT_USER_AGENT,
@@ -66,7 +67,7 @@ class WikimediaCommonsProvider:
         if self._owns_client:
             self._client.close()
 
-    def search(self, query: str, *, limit: int = 10) -> list[VisualCandidate]:
+    def search(self, query: str, *, limit: int = 20) -> list[VisualCandidate]:
         if limit < 1:
             raise VisualProviderResponseError("wikimedia: limit debe ser >= 1")
         cleaned = query.strip()
@@ -77,7 +78,7 @@ class WikimediaCommonsProvider:
             "action": "query",
             "generator": "search",
             "gsrnamespace": "6",
-            "gsrsearch": cleaned,
+            "gsrsearch": _gsrsearch_with_bitmap(cleaned),
             "gsrlimit": str(limit),
             "prop": "imageinfo",
             "iiprop": "url|size|mime|extmetadata",
@@ -143,12 +144,23 @@ def _parse_wikimedia_payload(payload: object) -> list[VisualCandidate]:
     return candidates
 
 
+def _gsrsearch_with_bitmap(query: str) -> str:
+    """Prioriza bitmaps (jpeg/png/…) para no gastar slots en PDF/SVG."""
+    if "filetype:" in query.casefold():
+        return query
+    return f"{query} filetype:bitmap"
+
+
 def _candidate_from_page(page: dict[str, object]) -> VisualCandidate | None:
     imageinfo = page.get("imageinfo")
     if not isinstance(imageinfo, list) or not imageinfo:
         return None
     info = imageinfo[0]
     if not isinstance(info, dict):
+        return None
+
+    mime_type = _as_nonempty_str(info.get("mime"))
+    if mime_type is not None and not is_allowed_mime_type(mime_type):
         return None
 
     width = _as_positive_int(info.get("width"))
@@ -170,7 +182,6 @@ def _candidate_from_page(page: dict[str, object]) -> VisualCandidate | None:
     author = _clean_author(_meta_value(meta, "Artist"))
 
     title = _as_nonempty_str(page.get("title")) or "Untitled"
-    mime_type = _as_nonempty_str(info.get("mime"))
 
     return VisualCandidate(
         provider="wikimedia",

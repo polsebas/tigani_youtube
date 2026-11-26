@@ -203,6 +203,9 @@ def test_agno_planner_rechaza_urls_y_reintenta(monkeypatch: pytest.MonkeyPatch) 
     agent = _AgentDoble.creados[0]
     assert agent.kwargs["output_schema"] is VisualQueryPlan
     assert PLANNER_INSTRUCTIONS in agent.kwargs["instructions"]
+    assert "2–4 palabras clave" in PLANNER_INSTRUCTIONS
+    assert "Casa Rosada Buenos Aires" in PLANNER_INSTRUCTIONS
+    assert "US dollar banknotes prices" in PLANNER_INSTRUCTIONS
     assert agent.kwargs["expected_output"] == PLANNER_EXPECTED_OUTPUT
 
     bad = VisualQueryPlan(

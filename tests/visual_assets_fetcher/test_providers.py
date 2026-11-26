@@ -38,9 +38,9 @@ def _wikimedia_payload() -> dict:
                                         'User:Example">María Pérez</a>'
                                     )
                                 },
-                                "LicenseShortName": {"value": "CC BY-SA 4.0"},
+                                "LicenseShortName": {"value": "CC BY 2.5 ar"},
                                 "LicenseUrl": {
-                                    "value": "https://creativecommons.org/licenses/by-sa/4.0/"
+                                    "value": "https://creativecommons.org/licenses/by/2.5/ar/"
                                 },
                             },
                         }
@@ -81,6 +81,38 @@ def _wikimedia_payload() -> dict:
                         }
                     ],
                 },
+                "5": {
+                    "title": "File:Informe.pdf",
+                    "imageinfo": [
+                        {
+                            "url": "https://upload.wikimedia.org/wikipedia/commons/informe.pdf",
+                            "descriptionurl": (
+                                "https://commons.wikimedia.org/wiki/File:Informe.pdf"
+                            ),
+                            "width": 1200,
+                            "height": 1600,
+                            "mime": "application/pdf",
+                            "extmetadata": {
+                                "LicenseShortName": {"value": "CC BY 4.0"},
+                            },
+                        }
+                    ],
+                },
+                "6": {
+                    "title": "File:Logo.svg",
+                    "imageinfo": [
+                        {
+                            "url": "https://upload.wikimedia.org/wikipedia/commons/logo.svg",
+                            "descriptionurl": "https://commons.wikimedia.org/wiki/File:Logo.svg",
+                            "width": 512,
+                            "height": 512,
+                            "mime": "image/svg+xml",
+                            "extmetadata": {
+                                "LicenseShortName": {"value": "CC0"},
+                            },
+                        }
+                    ],
+                },
             }
         }
     }
@@ -113,11 +145,22 @@ def _openverse_payload() -> dict:
                 "filetype": "png",
             },
             {
-                "title": "Bad dims",
+                "title": "Unknown dims",
                 "creator": "X",
                 "license": "pdm",
                 "foreign_landing_url": "https://example.com/photo/3",
                 "url": "https://cdn.openverse.org/photo3.jpg",
+                "width": None,
+                "height": None,
+                "filetype": "jpg",
+            },
+            {
+                "title": "Zero width kept if height known",
+                "creator": "Y",
+                "license": "by",
+                "license_version": "2.0",
+                "foreign_landing_url": "https://example.com/photo/4",
+                "url": "https://cdn.openverse.org/photo4.jpg",
                 "width": 0,
                 "height": 500,
                 "filetype": "jpg",
@@ -130,7 +173,7 @@ def test_wikimedia_parsea_imageinfo_y_limpia_html_artist() -> None:
     def handler(request: httpx.Request) -> httpx.Response:
         assert "commons.wikimedia.org" in str(request.url)
         assert request.url.params["gsrnamespace"] == "6"
-        assert request.url.params["gsrsearch"] == "casa rosada"
+        assert request.url.params["gsrsearch"] == "casa rosada filetype:bitmap"
         assert request.headers["User-Agent"] == DEFAULT_USER_AGENT
         assert "TiganiBroadcast/0.1" in request.headers["User-Agent"]
         return httpx.Response(200, json=_wikimedia_payload())
@@ -149,10 +192,30 @@ def test_wikimedia_parsea_imageinfo_y_limpia_html_artist() -> None:
     first = results[0]
     assert first.provider == "wikimedia"
     assert first.author == "María Pérez"
-    assert first.raw_license == "CC BY-SA 4.0"
+    assert first.raw_license == "CC BY 2.5 ar"
     assert first.width == 1600
     assert results[1].author == "Wikimedia Commons contributor"
     assert results[1].raw_license == "Public domain"
+
+
+def test_wikimedia_no_duplica_filetype_si_ya_viene() -> None:
+    seen: dict[str, str] = {}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        seen["gsrsearch"] = request.url.params["gsrsearch"]
+        return httpx.Response(200, json={"query": {"pages": {}}})
+
+    provider = WikimediaCommonsProvider(
+        transport=httpx.MockTransport(handler),
+        sleep_fn=lambda _s: None,
+        min_interval_seconds=0.0,
+    )
+    try:
+        provider.search("dolar filetype:bitmap")
+    finally:
+        provider.close()
+
+    assert seen["gsrsearch"] == "dolar filetype:bitmap"
 
 
 def test_wikimedia_429_reintenta_con_retry_after() -> None:
@@ -296,13 +359,19 @@ def test_openverse_parsea_results_y_filtra_licencias_en_query() -> None:
     assert seen_params["page_size"] == "8"
     assert OPENVERSE_LICENSE_FILTER == "cc0,pdm,by,by-sa"
 
-    assert len(results) == 2
+    assert len(results) == 4
     assert results[0].raw_license == "by 4.0"
     assert results[0].mime_type == "image/jpeg"
     assert results[0].author == "Alex Creator"
     assert results[1].author == "Openverse contributor"
     assert results[1].raw_license == "cc0"
     assert results[1].mime_type == "image/png"
+    assert results[2].width is None
+    assert results[2].height is None
+    assert results[2].raw_license == "pdm"
+    assert results[3].width is None
+    assert results[3].height == 500
+    assert results[3].raw_license == "by 2.0"
 
 
 def test_openverse_http_error() -> None:

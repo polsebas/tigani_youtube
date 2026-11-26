@@ -32,7 +32,7 @@ _MIME_TO_EXT = {
     "image/png": "png",
     "image/webp": "webp",
 }
-_DEFAULT_SEARCH_LIMIT = 10
+_DEFAULT_SEARCH_LIMIT = 20
 
 
 class VisualAssetFetcher:
@@ -127,7 +127,8 @@ class VisualAssetFetcher:
     def _is_candidate_eligible(self, candidate: VisualCandidate) -> bool:
         if normalize_and_validate_license(candidate.raw_license) is None:
             return False
-        if candidate.width < self._min_width:
+        # Dimensiones desconocidas: no aplicar min_width; la descarga valida MIME/bytes.
+        if candidate.width is not None and candidate.width < self._min_width:
             return False
         if candidate.mime_type is None:
             return True
@@ -135,9 +136,13 @@ class VisualAssetFetcher:
 
     @staticmethod
     def _rank_key(candidate: VisualCandidate) -> tuple[int, int]:
-        # Horizontal primero (0), vertical después (1); luego mayor ancho.
-        orientation = 0 if candidate.width >= candidate.height else 1
-        return (orientation, -candidate.width)
+        # Horizontal (0), vertical (1), dims desconocidas (2); luego mayor ancho.
+        width = candidate.width
+        height = candidate.height
+        if width is None or height is None:
+            return (2, 0)
+        orientation = 0 if width >= height else 1
+        return (orientation, -width)
 
     def _download(
         self,

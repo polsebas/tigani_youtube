@@ -52,6 +52,12 @@ def test_visual_attribution_acepta_payload_completo() -> None:
     assert attribution.license_url is not None
 
 
+def test_visual_attribution_acepta_dimensiones_desconocidas() -> None:
+    attribution = _attribution(width=None, height=None)
+    assert attribution.width is None
+    assert attribution.height is None
+
+
 @pytest.mark.parametrize(
     "field,value",
     [

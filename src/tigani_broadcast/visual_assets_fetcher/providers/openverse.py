@@ -48,7 +48,7 @@ class OpenverseProvider:
         if self._owns_client:
             self._client.close()
 
-    def search(self, query: str, *, limit: int = 10) -> list[VisualCandidate]:
+    def search(self, query: str, *, limit: int = 20) -> list[VisualCandidate]:
         if limit < 1:
             raise VisualProviderResponseError("openverse: limit debe ser >= 1")
         cleaned = query.strip()
@@ -90,16 +90,15 @@ def _parse_openverse_payload(payload: object) -> list[VisualCandidate]:
 
 
 def _candidate_from_result(item: dict[str, object]) -> VisualCandidate | None:
-    width = _as_positive_int(item.get("width"))
-    height = _as_positive_int(item.get("height"))
-    if width is None or height is None:
-        return None
-
     image_url = _as_nonempty_str(item.get("url"))
     source_page_url = _as_nonempty_str(item.get("foreign_landing_url"))
     raw_license_base = _as_nonempty_str(item.get("license"))
     if image_url is None or source_page_url is None or raw_license_base is None:
         return None
+
+    # Openverse a veces omite width/height: no descartar si URL + licencia son válidas.
+    width = _as_positive_int(item.get("width"))
+    height = _as_positive_int(item.get("height"))
 
     license_version = _as_nonempty_str(item.get("license_version"))
     raw_license = (
