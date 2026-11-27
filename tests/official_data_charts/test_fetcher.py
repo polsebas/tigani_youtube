@@ -118,16 +118,45 @@ def test_sin_fallback_propaga_auth_error() -> None:
         fetcher.fetch(entry, date(2025, 1, 1), date(2025, 1, 2))
 
 
-def test_error_servidor_indec_no_hace_fallback_si_hay_token() -> None:
-    def handler(request: httpx.Request) -> httpx.Response:
-        return httpx.Response(500, request=request, text="boom")
+def test_fallback_indec_a_datos_ar_ante_http_404_tabla() -> None:
+    """INDEC 404 (tabla inexistente) con token presente → cae a datos_ar."""
+    calls: list[str] = []
+    datos_payload = {"data": [["2025-01-01", 0.025], ["2025-02-01", 0.028]]}
 
-    indec = INDECProvider(token="tok", transport=httpx.MockTransport(handler))
-    datos = DatosArgentinaProvider(
-        transport=httpx.MockTransport(lambda r: _json_response(r, {"data": [["2025-01-01", 1.0]]}))
-    )
+    def route(request: httpx.Request) -> httpx.Response:
+        calls.append(request.url.path)
+        if "ipc_nacional_tidy" in request.url.path:
+            return httpx.Response(
+                404,
+                request=request,
+                text='{"message":"Could not find the table"}',
+            )
+        return _json_response(request, datos_payload)
+
+    indec = INDECProvider(token="tok-presente", transport=httpx.MockTransport(route))
+    datos = DatosArgentinaProvider(transport=httpx.MockTransport(route))
     fetcher = SeriesFetcher(providers={"indec": indec, "datos_ar": datos})
-    with pytest.raises(ProviderResponseError, match="HTTP 500"):
+    entry = get_catalog_entry("ar_indec_ipc_mensual")
+    series = fetcher.fetch(entry, date(2025, 1, 1), date(2025, 2, 28))
+
+    assert series.provider == "datos_ar"
+    assert series.series_id == entry.fallback_series_id
+    assert series.observations[0].value == pytest.approx(2.5)
+    assert any("ipc_nacional_tidy" in path for path in calls)
+    indec.close()
+    datos.close()
+
+
+def test_fallback_indec_falla_si_datos_ar_tambien_falla() -> None:
+    def boom(request: httpx.Request) -> httpx.Response:
+        if "ipc_nacional_tidy" in request.url.path:
+            return httpx.Response(500, request=request, text="indec boom")
+        return httpx.Response(503, request=request, text="datos boom")
+
+    indec = INDECProvider(token="tok", transport=httpx.MockTransport(boom))
+    datos = DatosArgentinaProvider(transport=httpx.MockTransport(boom))
+    fetcher = SeriesFetcher(providers={"indec": indec, "datos_ar": datos})
+    with pytest.raises(ProviderResponseError, match="datos_ar|HTTP 503"):
         fetcher.fetch(
             get_catalog_entry("ar_indec_ipc_mensual"),
             date(2025, 1, 1),

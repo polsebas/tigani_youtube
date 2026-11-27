@@ -276,14 +276,19 @@ html, body {
   padding: 0;
   width: 100%;
   height: 100%;
+  min-width: 960px;
+  min-height: 540px;
+  overflow: auto;
   background: #000;
   color: var(--ink);
   font-family: "IBM Plex Sans", "Segoe UI", sans-serif;
 }
 .plate {
-  width: min(100%, 1920px);
+  width: 100%;
+  height: 100%;
+  min-width: 960px;
+  min-height: 540px;
   margin: 0 auto;
-  aspect-ratio: 16 / 9;
   background:
     radial-gradient(1200px 500px at 10% -10%, #1d3348 0%, transparent 55%),
     linear-gradient(160deg, #101820 0%, #0c1219 100%);
@@ -298,7 +303,7 @@ html, body {
   align-items: center;
   border-bottom: 1px solid var(--line);
   padding-bottom: 0.6%;
-  font-size: clamp(14px, 1.4vw, 22px);
+  font-size: clamp(14px, 1.4vw, 44px);
   letter-spacing: 0.04em;
   text-transform: uppercase;
 }
@@ -320,13 +325,13 @@ html, body {
 }
 .headline-row { margin-bottom: 0.4%; }
 .headline {
-  font-size: clamp(24px, 2.8vw, 48px);
+  font-size: clamp(24px, 2.8vw, 96px);
   font-weight: 700;
   line-height: 1.08;
   margin: 0 0 0.25em;
 }
 .value {
-  font-size: clamp(22px, 2.4vw, 40px);
+  font-size: clamp(22px, 2.4vw, 80px);
   font-weight: 700;
   color: var(--accent);
   margin: 0.6em 0 0;
@@ -335,7 +340,7 @@ html, body {
 .error .value { color: var(--danger); }
 .meta, .credit, .footer {
   color: var(--muted);
-  font-size: clamp(14px, 1.35vw, 22px);
+  font-size: clamp(14px, 1.35vw, 44px);
   line-height: 1.35;
 }
 .side {
@@ -351,7 +356,7 @@ html, body {
 .footer {
   border-top: 1px solid var(--line);
   padding-top: 0.7%;
-  font-size: clamp(12px, 1.1vw, 18px);
+  font-size: clamp(12px, 1.1vw, 36px);
 }
 .media {
   margin: 0;

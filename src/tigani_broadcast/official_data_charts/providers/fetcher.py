@@ -9,7 +9,6 @@ from tigani_broadcast.official_data_charts.cache import DiskSeriesCache
 from tigani_broadcast.official_data_charts.models import CatalogEntry, ProviderId, SeriesData
 from tigani_broadcast.official_data_charts.providers.base import (
     DataProvider,
-    ProviderAuthError,
     ProviderError,
     ProviderResponseError,
 )
@@ -21,8 +20,8 @@ class SeriesFetcher:
 
     - Valida `start_date <= end_date`.
     - Usa `DiskSeriesCache` si está configurada (clave del proveedor resuelto).
-    - Ante `ProviderAuthError` de INDEC sin token y con fallback `datos_ar`,
-      reintenta de forma trazable contra Datos Argentina.
+    - Ante cualquier `ProviderError` de INDEC (token, 404 de tabla, 5xx, timeout)
+      con `fallback_provider=datos_ar`, reintenta de forma trazable contra Datos Argentina.
     """
 
     def __init__(
@@ -51,12 +50,8 @@ class SeriesFetcher:
 
         try:
             series = self._call_provider(provider_id, entry, start_date, end_date)
-        except ProviderAuthError:
-            if (
-                provider_id == "indec"
-                and entry.fallback_provider == "datos_ar"
-                and entry.fallback_series_id is not None
-            ):
+        except ProviderError:
+            if self._can_fallback_indec_to_datos_ar(provider_id, entry):
                 series = self._fetch_datos_ar_fallback(entry, start_date, end_date)
             else:
                 raise
@@ -69,6 +64,17 @@ class SeriesFetcher:
             series,
         )
         return series
+
+    @staticmethod
+    def _can_fallback_indec_to_datos_ar(
+        provider_id: ProviderId,
+        entry: CatalogEntry,
+    ) -> bool:
+        return (
+            provider_id == "indec"
+            and entry.fallback_provider == "datos_ar"
+            and entry.fallback_series_id is not None
+        )
 
     def _fetch_datos_ar_fallback(
         self,

@@ -24,16 +24,19 @@ html, body {
   padding: 0;
   width: 100%;
   height: 100%;
+  min-width: 960px;
+  min-height: 540px;
+  overflow: auto;
   background: #000;
   color: var(--ink);
   font-family: "IBM Plex Sans", "Segoe UI", sans-serif;
 }
 .plate {
   width: 100%;
-  max-width: 1920px;
-  height: 1080px;
+  height: 100%;
+  min-width: 960px;
+  min-height: 540px;
   margin: 0 auto;
-  aspect-ratio: 16 / 9;
   background:
     radial-gradient(1200px 500px at 10% -10%, #1d3348 0%, transparent 55%),
     linear-gradient(160deg, #101820 0%, #0c1219 100%);
@@ -48,7 +51,7 @@ html, body {
   align-items: center;
   border-bottom: 1px solid var(--line);
   padding-bottom: 0.8%;
-  font-size: clamp(14px, 1.4vw, 22px);
+  font-size: clamp(14px, 1.4vw, 44px);
   letter-spacing: 0.06em;
   text-transform: uppercase;
   color: var(--muted);
@@ -64,21 +67,21 @@ html, body {
 }
 .kicker {
   color: var(--accent);
-  font-size: clamp(16px, 1.6vw, 28px);
+  font-size: clamp(16px, 1.6vw, 56px);
   letter-spacing: 0.08em;
   text-transform: uppercase;
   margin: 0 0 0.6em;
   font-weight: 700;
 }
 .headline {
-  font-size: clamp(36px, 4.6vw, 72px);
+  font-size: clamp(36px, 4.6vw, 144px);
   font-weight: 700;
   line-height: 1.05;
   margin: 0 0 0.45em;
 }
 .summary {
   color: var(--muted);
-  font-size: clamp(18px, 2vw, 32px);
+  font-size: clamp(18px, 2vw, 64px);
   line-height: 1.35;
   margin: 0;
   max-width: 42ch;
@@ -87,7 +90,7 @@ html, body {
   border-top: 1px solid var(--line);
   padding-top: 0.9%;
   color: var(--muted);
-  font-size: clamp(12px, 1.1vw, 18px);
+  font-size: clamp(12px, 1.1vw, 36px);
 }
 """
 
@@ -155,26 +158,30 @@ def render_deck_html(manifest: BroadcastPackageManifest) -> str:
       padding: 0;
       width: 100%;
       height: 100%;
+      min-width: 960px;
+      min-height: 540px;
+      overflow: auto;
       background: #000;
       color: #f4f7fb;
       font-family: "IBM Plex Sans", "Segoe UI", sans-serif;
-      overflow: hidden;
     }}
     #stage {{
       position: relative;
-      width: 100%;
-      max-width: 1920px;
-      height: 1080px;
-      margin: 0 auto;
-      aspect-ratio: 16 / 9;
+      width: 100vw;
+      height: 100vh;
+      min-width: 960px;
+      min-height: 540px;
+      margin: 0;
       background: #000;
       outline: none;
     }}
     #frame {{
       position: absolute;
       inset: 0;
-      width: 100%;
-      height: 100%;
+      width: 100vw;
+      height: 100vh;
+      min-width: 960px;
+      min-height: 540px;
       border: 0;
       background: #000;
       pointer-events: none;
@@ -192,19 +199,26 @@ def render_deck_html(manifest: BroadcastPackageManifest) -> str:
       background: rgba(8, 12, 18, 0.82);
       border: 1px solid #2b3b4d;
       border-radius: 10px;
-      font-size: clamp(12px, 1.15vw, 18px);
+      font-size: clamp(12px, 1.15vw, 36px);
       color: #9db0c3;
       z-index: 2;
       pointer-events: auto;
     }}
-    #hud.visible {{ display: flex; }}
+    #hud.visible {{
+      display: flex;
+      padding-right: 6.5em;
+    }}
     #hud strong {{ color: #3db8a8; }}
-    #hud .nav {{
+    #nav {{
+      position: absolute;
+      right: 1.2%;
+      bottom: 1.5%;
       display: flex;
       gap: 0.45em;
-      align-items: center;
+      z-index: 3;
+      pointer-events: auto;
     }}
-    #hud button {{
+    #nav button, #hud button {{
       pointer-events: auto;
       cursor: pointer;
       border: 1px solid #2b3b4d;
@@ -215,7 +229,10 @@ def render_deck_html(manifest: BroadcastPackageManifest) -> str:
       font: inherit;
       line-height: 1.2;
     }}
-    #hud button:hover {{ border-color: #3db8a8; color: #3db8a8; }}
+    #nav button:hover, #hud button:hover {{
+      border-color: #3db8a8;
+      color: #3db8a8;
+    }}
     .empty {{
       position: absolute;
       inset: 0;
@@ -224,7 +241,7 @@ def render_deck_html(manifest: BroadcastPackageManifest) -> str:
       justify-content: center;
       padding: 4%;
       text-align: center;
-      font-size: clamp(20px, 2.4vw, 36px);
+      font-size: clamp(20px, 2.4vw, 72px);
       color: #9db0c3;
       z-index: 1;
       pointer-events: none;
@@ -235,11 +252,11 @@ def render_deck_html(manifest: BroadcastPackageManifest) -> str:
   <div id="stage" tabindex="0">
     <iframe id="frame" title="Placa activa" src="about:blank" tabindex="-1"></iframe>
     {empty_notice}
+    <div id="nav" aria-label="Navegación">
+      <button type="button" id="btn-prev" aria-label="Anterior">◀</button>
+      <button type="button" id="btn-next" aria-label="Siguiente">▶</button>
+    </div>
     <div id="hud" aria-live="polite">
-      <span class="nav">
-        <button type="button" id="hud-prev" aria-label="Anterior">◀</button>
-        <button type="button" id="hud-next" aria-label="Siguiente">▶</button>
-      </span>
       <span><strong id="hud-index">0/0</strong></span>
       <span id="hud-clock">--:--:--</span>
       <span id="hud-chapter">—</span>
@@ -255,14 +272,20 @@ def render_deck_html(manifest: BroadcastPackageManifest) -> str:
     const hudClock = document.getElementById("hud-clock");
     const hudChapter = document.getElementById("hud-chapter");
     const hudTitle = document.getElementById("hud-title");
-    const hudPrev = document.getElementById("hud-prev");
-    const hudNext = document.getElementById("hud-next");
+    const btnPrev = document.getElementById("btn-prev");
+    const btnNext = document.getElementById("btn-next");
     let index = 0;
 
+    // Solo recuperar foco si el iframe (u otro nodo) lo robó.
+    // No llamar focus() sobre window: en OBS Interactuar saca el foco del panel CEF.
     function keepFocus() {{
-      window.focus();
-      if (document.activeElement !== stage) {{
+      const active = document.activeElement;
+      if (active === stage || active === btnPrev || active === btnNext) return;
+      if (active && active.closest && active.closest("#hud")) return;
+      try {{
         stage.focus({{ preventScroll: true }});
+      }} catch (_err) {{
+        stage.focus();
       }}
     }}
 
@@ -276,23 +299,24 @@ def render_deck_html(manifest: BroadcastPackageManifest) -> str:
     function render() {{
       const total = SLIDES.length;
       if (total === 0) {{
-        frame.removeAttribute("src");
+        if (frame.hasAttribute("src")) frame.removeAttribute("src");
         hudIndex.textContent = "0/0";
         hudClock.textContent = "--:--:--";
         hudChapter.textContent = "Sin slides";
         hudTitle.textContent = "Rotación vacía";
-        keepFocus();
         return;
       }}
       if (index < 0) index = 0;
       if (index >= total) index = total - 1;
       const slide = SLIDES[index];
-      frame.src = slide.relative_html_path;
+      const nextSrc = slide.relative_html_path;
+      if (frame.getAttribute("src") !== nextSrc) {{
+        frame.src = nextSrc;
+      }}
       hudIndex.textContent = (index + 1) + "/" + total;
       hudClock.textContent = slide.timestamp;
       hudChapter.textContent = "Cap " + (slide.chapter_index + 1) + " · " + slide.chapter_title;
       hudTitle.textContent = slide.title;
-      keepFocus();
     }}
 
     function next() {{
@@ -307,23 +331,12 @@ def render_deck_html(manifest: BroadcastPackageManifest) -> str:
       render();
     }}
 
-    stage.addEventListener("click", (event) => {{
-      if (event.target.closest("#hud")) return;
-      keepFocus();
-    }});
-    frame.addEventListener("load", keepFocus);
-    hudPrev.addEventListener("click", (event) => {{
-      event.preventDefault();
-      event.stopPropagation();
-      prev();
-    }});
-    hudNext.addEventListener("click", (event) => {{
-      event.preventDefault();
-      event.stopPropagation();
-      next();
-    }});
-
-    window.addEventListener("keydown", (event) => {{
+    function onKeydown(event) {{
+      // Un solo handler (document capture): window+document dispararían dos veces.
+      // Evitar doble avance: Space/Enter en botón ya dispara click.
+      if (event.target && event.target.closest && event.target.closest("button")) {{
+        if (event.key === " " || event.key === "Enter") return;
+      }}
       if (event.key === "ArrowRight" || event.key === " ") {{
         event.preventDefault();
         next();
@@ -341,7 +354,28 @@ def render_deck_html(manifest: BroadcastPackageManifest) -> str:
       }} else if (event.key === "h" || event.key === "H") {{
         hud.classList.toggle("visible");
       }}
+    }}
+
+    stage.addEventListener("click", (event) => {{
+      if (event.target.closest("#nav") || event.target.closest("#hud")) return;
+      keepFocus();
     }});
+    frame.addEventListener("load", keepFocus);
+    btnPrev.addEventListener("click", (event) => {{
+      event.preventDefault();
+      event.stopPropagation();
+      prev();
+      keepFocus();
+    }});
+    btnNext.addEventListener("click", (event) => {{
+      event.preventDefault();
+      event.stopPropagation();
+      next();
+      keepFocus();
+    }});
+
+    // Capture: llega aunque el foco esté en #stage (OBS Interactuar / CEF).
+    document.addEventListener("keydown", onKeydown, true);
 
     showHudFromQuery();
     keepFocus();

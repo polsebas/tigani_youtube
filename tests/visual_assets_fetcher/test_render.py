@@ -118,7 +118,12 @@ def test_html_verified_horizontal_credito_y_ruta_relativa() -> None:
     assert "María Pérez" in html
     assert "CC BY-SA 4.0" in html
     assert "wikimedia" in html
-    assert "aspect-ratio: 16 / 9" in html
+    assert "min-width: 960px" in html
+    assert "min-height: 540px" in html
+    assert "max-width: 1920px" not in html
+    assert "max-height: 1080px" not in html
+    assert "object-fit: cover" in html
+    assert "object-fit: contain" in html
     assert not re.search(r"https?://(?:cdn\.|fonts\.|unpkg|jsdelivr)", html)
     assert "<script" not in html
     assert 'rel="stylesheet"' not in html

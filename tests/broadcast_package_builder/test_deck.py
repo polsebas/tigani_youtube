@@ -30,8 +30,10 @@ def test_render_chapter_cover_html_16x9_escape() -> None:
         "00:00:00",
         'Video "piloto"',
     )
-    assert "aspect-ratio: 16 / 9" in html_doc
-    assert "1080px" in html_doc
+    assert "min-width: 960px" in html_doc
+    assert "min-height: 540px" in html_doc
+    assert "max-width: 1920px" not in html_doc
+    assert "max-height: 1080px" not in html_doc
     assert "cdn." not in html_doc.lower()
     assert "&lt;script&gt;" in html_doc
     assert "<script>alert" not in html_doc
@@ -67,10 +69,19 @@ def test_render_deck_html_controles_hud_y_escape(tmp_path: Path) -> None:
     assert "pointer-events: none" in deck
     assert 'tabindex="-1"' in deck
     assert 'id="stage" tabindex="0"' in deck
-    assert 'window.addEventListener("keydown"' in deck
-    assert "window.focus()" in deck
-    assert 'id="hud-prev"' in deck
-    assert 'id="hud-next"' in deck
+    assert 'document.addEventListener("keydown"' in deck
+    assert "window.focus()" not in deck
+    assert 'id="btn-prev"' in deck
+    assert 'id="btn-next"' in deck
+    assert 'id="nav"' in deck
+    assert "top: 1.5%" not in deck
+    assert "bottom: 1.5%" in deck
+    assert "width: 100vw" in deck
+    assert "height: 100vh" in deck
+    assert "min-width: 960px" in deck
+    assert "min-height: 540px" in deck
+    assert "max-width: 1920px" not in deck
+    assert "max-height: 1080px" not in deck
     assert "ArrowRight" in deck
     assert 'event.key === " "' in deck
     assert "ArrowLeft" in deck

@@ -165,6 +165,7 @@ def assemble_broadcast_package(
             )
             original_index += 1
 
+    echarts_copied = False
     for item in charts.items:
         if item.resolution_status == "fetch_error" and not include_errors:
             excluded_errors.append(
@@ -183,6 +184,11 @@ def assemble_broadcast_package(
         filename = Path(item.html_path).name
         dest = charts_dir / filename
         shutil.copy2(item.html_path, dest)
+        if not echarts_copied:
+            sibling = Path(item.html_path).parent / "echarts.min.js"
+            if sibling.is_file():
+                shutil.copy2(sibling, charts_dir / "echarts.min.js")
+                echarts_copied = True
         relative = f"slides/charts/{filename}"
         chapter_title = chapters.chapters[item.chapter_index].title
         source_ref = None

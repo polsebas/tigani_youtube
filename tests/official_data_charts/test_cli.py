@@ -209,7 +209,9 @@ def test_cli_end_to_end_offline(tmp_path: Path) -> None:
     html_files = list(charts_dir.glob("*.html"))
     assert len(html_files) == 5
     verified_html = next(p for p in html_files if "cue001" in p.name).read_text(encoding="utf-8")
-    assert "<svg" in verified_html
+    assert '<script src="echarts.min.js">' in verified_html
+    assert "echarts.init" in verified_html
+    assert (charts_dir / "echarts.min.js").is_file()
     assert "Fuente: INDEC — IPC" in verified_html
     md = out_md.read_text(encoding="utf-8")
     assert "fetch_error" in md

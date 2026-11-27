@@ -21,6 +21,8 @@ ProviderId = Literal[
 Geography = Literal["AR", "BR", "US", "EU", "GLOBAL"]
 ResolutionStatus = Literal["verified_series", "quoted_only", "fetch_error"]
 SeriesFrequency = Literal["daily", "monthly", "quarterly", "annual"]
+NarrativeMode = Literal["trend_with_callout", "ytd_focus", "term_comparison"]
+DeltaDirection = Literal["up", "down", "flat"]
 
 
 class CatalogEntry(BaseModel):
@@ -114,6 +116,46 @@ class SeriesMetrics(BaseModel):
     flags_present: list[str]
 
 
+class RegimeBand(BaseModel):
+    """Tramo de gestión presidencial argentina ya recortado a la ventana visible."""
+
+    model_config = ConfigDict(extra="forbid", strict=True, frozen=True)
+
+    label: str = Field(min_length=1, max_length=40)
+    start_date: date
+    end_date: date
+
+    @model_validator(mode="after")
+    def end_not_before_start(self) -> Self:
+        if self.end_date < self.start_date:
+            raise ValueError("end_date no puede ser menor que start_date")
+        return self
+
+
+class EditorialKpi(BaseModel):
+    """Micro-métrica editorial derivada en Python (nunca por LLM)."""
+
+    model_config = ConfigDict(extra="forbid", strict=True, frozen=True)
+
+    label: str = Field(min_length=1, max_length=40)
+    formatted_value: str = Field(min_length=1, max_length=40)
+    detail: str | None = Field(default=None, max_length=60)
+
+
+class ChartNarrative(BaseModel):
+    """Narrativa visual determinista anclada al último dato <= publish_date."""
+
+    model_config = ConfigDict(extra="forbid", strict=True, frozen=True)
+
+    mode: NarrativeMode
+    headline_badge: str | None = Field(default=None, max_length=60)
+    delta_direction: DeltaDirection | None = None
+    anchor_date: str = Field(min_length=1)
+    anchor_label: str = Field(min_length=1, max_length=60)
+    kpis: list[EditorialKpi] = Field(default_factory=list, max_length=3)
+    regime_bands: list[RegimeBand] = Field(default_factory=list)
+
+
 class ChartResolutionDraft(BaseModel):
     """Propuesta interna del agente (Corte 3). Sin fetch_error: eso lo asigna el pipeline."""
 
@@ -124,6 +166,7 @@ class ChartResolutionDraft(BaseModel):
     start_date: date | None = None
     end_date: date | None = None
     rationale: str = Field(min_length=1, max_length=240)
+    narrative_mode: NarrativeMode = "trend_with_callout"
 
     @model_validator(mode="after")
     def status_fields_are_consistent(self) -> Self:
@@ -160,6 +203,7 @@ class ChartArtifact(BaseModel):
     rationale: str = Field(min_length=1)
     series: SeriesData | None = None
     metrics: SeriesMetrics | None = None
+    narrative: ChartNarrative | None = None
     error_message: str | None = None
     html_path: str | None = None
 

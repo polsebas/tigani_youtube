@@ -18,10 +18,12 @@ from tigani_broadcast.official_data_charts.providers.base import ProviderError
 from tigani_broadcast.official_data_charts.resolver import (
     RESOLVER_EXPECTED_OUTPUT,
     RESOLVER_INSTRUCTIONS,
+    SERIES_CATALOG,
     AgnoMentionResolver,
     ResolutionValidationError,
     _LLMResolutionPayload,
     draft_from_llm_payload,
+    fallback_match_series_key,
     format_resolver_prompt,
     resolve_chapters_to_artifacts,
 )
@@ -169,7 +171,8 @@ def test_payload_sin_fechas_completa_rango_por_frecuencia() -> None:
     )
     assert daily.resolution_status == "verified_series"
     assert daily.end_date == publish
-    assert daily.start_date == publish - timedelta(days=90)
+    assert daily.narrative_mode == "trend_with_callout"
+    assert daily.start_date == publish - timedelta(days=400)
 
     monthly = draft_from_llm_payload(
         _LLMResolutionPayload(
@@ -178,11 +181,35 @@ def test_payload_sin_fechas_completa_rango_por_frecuencia() -> None:
         ),
         publish_date=publish,
     )
-    assert monthly.start_date == publish - timedelta(days=365)
+    assert monthly.start_date == publish - timedelta(days=400)
     assert monthly.end_date == publish
 
 
-def test_ventana_degenerada_monthly_hoy_se_expande_a_12_meses() -> None:
+@pytest.mark.parametrize(
+    "mode,expected_days",
+    [
+        ("trend_with_callout", 400),
+        ("ytd_focus", 400),
+        ("term_comparison", 1461),
+    ],
+)
+def test_ventana_ampliada_segun_narrative_mode(mode: str, expected_days: int) -> None:
+    publish = date(2025, 12, 11)
+    draft = draft_from_llm_payload(
+        _LLMResolutionPayload(
+            catalog_id="ar_indec_ipc_mensual",
+            narrative_mode=mode,  # type: ignore[arg-type]
+            rationale=f"Modo {mode}.",
+        ),
+        publish_date=publish,
+    )
+    assert draft.narrative_mode == mode
+    assert draft.end_date == publish
+    assert draft.start_date == publish - timedelta(days=expected_days)
+    assert (draft.end_date - draft.start_date).days == expected_days
+
+
+def test_ventana_degenerada_monthly_hoy_se_expande_a_13_meses() -> None:
     """Caso time_reference='hoy': LLM manda start==end==publish_date en serie mensual."""
     publish = date(2025, 12, 11)
     draft = draft_from_llm_payload(
@@ -196,8 +223,8 @@ def test_ventana_degenerada_monthly_hoy_se_expande_a_12_meses() -> None:
     )
     assert draft.resolution_status == "verified_series"
     assert draft.end_date == publish
-    assert draft.start_date == date(2024, 12, 11)
-    assert (draft.end_date - draft.start_date).days == 365
+    assert draft.start_date == publish - timedelta(days=400)
+    assert (draft.end_date - draft.start_date).days == 400
 
 
 def test_fechas_invertidas_siguen_fail_closed() -> None:
@@ -394,17 +421,260 @@ def test_resolve_chapters_mezcla_verified_quoted_y_fetch_error() -> None:
     assert package.items[0].resolution_status == "verified_series"
     assert package.items[0].metrics is not None
     assert package.items[0].series is not None
+    assert package.items[0].narrative is not None
+    assert package.items[0].narrative.mode == "trend_with_callout"
+    assert package.items[0].narrative.anchor_date == "2025-11-01"
     assert package.items[1].resolution_status == "quoted_only"
     assert package.items[1].indicator_label == "reservas netas"
+    assert package.items[1].narrative is None
     assert package.items[2].resolution_status == "quoted_only"
+    assert package.items[2].narrative is None
     assert package.items[3].resolution_status == "fetch_error"
     assert package.items[3].error_message == "HTTP 500 BCRA"
     assert package.items[3].series is None
+    assert package.items[3].narrative is None
+
+
+def test_resolve_chapters_narrative_term_comparison_pobla_bandas() -> None:
+    publish = date(2025, 6, 1)
+    mention = _mention(1, "índice de inflación", "2.5%")
+    observations = [
+        SeriesObservation(obs_date=date(2022, 1, 1), value=3.0),
+        SeriesObservation(obs_date=date(2023, 6, 1), value=6.0),
+        SeriesObservation(obs_date=date(2024, 6, 1), value=4.0),
+        SeriesObservation(obs_date=date(2025, 5, 1), value=2.5),
+    ]
+    package = resolve_chapters_to_artifacts(
+        ChapterizedTranscript(chapters=[_chapter(mention)]),
+        publish,
+        _ResolverFake(
+            {
+                "índice de inflación": ChartResolutionDraft(
+                    resolution_status="verified_series",
+                    catalog_id="ar_indec_ipc_mensual",
+                    start_date=date(2022, 1, 1),
+                    end_date=publish,
+                    rationale="Comparación de gestiones.",
+                    narrative_mode="term_comparison",
+                )
+            }
+        ),
+        _FetcherFake(
+            {
+                "ar_indec_ipc_mensual": SeriesData(
+                    catalog_id="ar_indec_ipc_mensual",
+                    provider="indec",
+                    source_tier="official_primary",
+                    series_id="145.3_INGNACNAL_DICI_M_38",
+                    source_url="https://example.test/ipc",
+                    source_attribution="Fuente: INDEC",
+                    unit="%",
+                    frequency="monthly",
+                    observations=observations,
+                )
+            }
+        ),  # type: ignore[arg-type]
+    )
+    assert len(package.items) == 1
+    artifact = package.items[0]
+    assert artifact.resolution_status == "verified_series"
+    assert artifact.narrative is not None
+    assert artifact.narrative.mode == "term_comparison"
+    assert len(artifact.narrative.regime_bands) >= 2
+    assert artifact.narrative.headline_badge is not None
+
+
+@pytest.mark.parametrize(
+    "indicator,context,expected",
+    [
+        ("índice de inflación", "Coyuntura local", "ar_indec_ipc_mensual"),
+        (
+            "índice de inflación",
+            "Las reservas netas son negativas; inflación local 2.5%",
+            "ar_indec_ipc_mensual",
+        ),
+        ("IPC", "mes pasado", "ar_indec_ipc_mensual"),
+        ("IPC interanual", "INDEC", "ar_indec_ipc_interanual"),
+        ("inflación interanual", "", "ar_indec_ipc_interanual"),
+        ("inflación EEUU", "CPI", None),
+        ("inflación", "Estados Unidos", None),
+        ("riesgo país", "", "ar_mkt_riesgo_pais"),
+        ("EMBI", "Argentina", "ar_mkt_riesgo_pais"),
+        ("dólar blue", "", "ar_mkt_dolar_blue"),
+        ("dólar oficial", "BCRA", "ar_bcra_dolar_mayorista"),
+        ("tipo de cambio oficial", "", "ar_bcra_dolar_mayorista"),
+        ("EMAE", "actividad", "ar_indec_emae_mensual"),
+        ("actividad económica", "mensual", "ar_indec_emae_mensual"),
+        ("reservas netas", "BCRA", None),
+        ("reservas brutas", "BCRA", None),
+    ],
+)
+def test_fallback_match_series_key_alias_inequivocos(
+    indicator: str,
+    context: str,
+    expected: str | None,
+) -> None:
+    matched = fallback_match_series_key(indicator, context)
+    assert matched == expected
+    if expected is not None:
+        assert expected in SERIES_CATALOG
+
+
+def test_fallback_no_arrastra_inflacion_desde_contexto_del_capitulo() -> None:
+    """Título/summary con 'inflación' no debe mapear menciones ajenas (falsos positivos)."""
+    matched = fallback_match_series_key(
+        "productos y servicios en dólares",
+        "El contexto de la inflación",
+    )
+    assert matched is None
+
+
+def _ipc_series() -> SeriesData:
+    return SeriesData(
+        catalog_id="ar_indec_ipc_mensual",
+        provider="indec",
+        source_tier="official_primary",
+        series_id="145.3_INGNACNAL_DICI_M_38",
+        source_url="https://example.test/ipc",
+        source_attribution="Fuente: INDEC",
+        unit="%",
+        frequency="monthly",
+        observations=[
+            SeriesObservation(obs_date=date(2025, 10, 1), value=1.9),
+            SeriesObservation(obs_date=date(2025, 11, 1), value=2.2),
+        ],
+    )
+
+
+def test_fallback_catalog_cuando_llm_devuelve_catalog_id_none(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """LLM con series_key/catalog_id=None: inflación → verified+narrative."""
+    _AgentDoble.creados.clear()
+    monkeypatch.setattr(
+        "tigani_broadcast.official_data_charts.resolver.Agent",
+        _AgentDoble,
+    )
+    resolver = AgnoMentionResolver(_Modelo(), max_retries=0)
+    agent = _AgentDoble.creados[0]
+    agent.content = _LLMResolutionPayload(
+        catalog_id=None,
+        narrative_mode="trend_with_callout",
+        rationale="No identifiqué serie.",
+    )
+
+    package = resolve_chapters_to_artifacts(
+        ChapterizedTranscript(chapters=[_chapter(_mention(1, "índice de inflación", "2,2%"))]),
+        date(2025, 12, 11),
+        resolver,
+        _FetcherFake({"ar_indec_ipc_mensual": _ipc_series()}),  # type: ignore[arg-type]
+    )
+
+    assert len(package.items) == 1
+    verified = package.items[0]
+    assert verified.resolution_status == "verified_series"
+    assert verified.series is not None
+    assert verified.series.catalog_id == "ar_indec_ipc_mensual"
+    assert verified.narrative is not None
+    assert verified.narrative.mode == "trend_with_callout"
+    assert verified.narrative.anchor_date == "2025-11-01"
+
+
+def test_fallback_catalog_cuando_llm_devuelve_quoted_only(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """LLM con catalog_id='quoted_only': inflación inequívoca → verified+narrative."""
+    _AgentDoble.creados.clear()
+    monkeypatch.setattr(
+        "tigani_broadcast.official_data_charts.resolver.Agent",
+        _AgentDoble,
+    )
+    resolver = AgnoMentionResolver(_Modelo(), max_retries=0)
+    agent = _AgentDoble.creados[0]
+    agent.content = _LLMResolutionPayload(
+        catalog_id="quoted_only",
+        narrative_mode="ytd_focus",
+        rationale="Decisión quoted_only del modelo local.",
+    )
+
+    package = resolve_chapters_to_artifacts(
+        ChapterizedTranscript(chapters=[_chapter(_mention(1, "índice de inflación", "2,2%"))]),
+        date(2025, 12, 11),
+        resolver,
+        _FetcherFake({"ar_indec_ipc_mensual": _ipc_series()}),  # type: ignore[arg-type]
+    )
+
+    assert len(package.items) == 1
+    verified = package.items[0]
+    assert verified.resolution_status == "verified_series"
+    assert verified.narrative is not None
+    assert verified.narrative.mode == "ytd_focus"
+    assert verified.series is not None
+    assert verified.series.catalog_id == "ar_indec_ipc_mensual"
+
+
+def test_fallback_catalog_cuando_llm_lanza_o_json_invalido(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Parseo/validación rota: inflación inequívoca → verified+narrative vía fallback."""
+    _AgentDoble.creados.clear()
+    monkeypatch.setattr(
+        "tigani_broadcast.official_data_charts.resolver.Agent",
+        _AgentDoble,
+    )
+    resolver = AgnoMentionResolver(_Modelo(), max_retries=0)
+    agent = _AgentDoble.creados[0]
+    agent.content = {"not": "a payload"}  # fuerza fallo de tipo / parseo estructurado
+
+    package = resolve_chapters_to_artifacts(
+        ChapterizedTranscript(chapters=[_chapter(_mention(1, "índice de inflación", "2,2%"))]),
+        date(2025, 12, 11),
+        resolver,
+        _FetcherFake({"ar_indec_ipc_mensual": _ipc_series()}),  # type: ignore[arg-type]
+    )
+
+    assert len(package.items) == 1
+    verified = package.items[0]
+    assert verified.resolution_status == "verified_series"
+    assert verified.narrative is not None
+    assert verified.series is not None
+    assert verified.series.catalog_id == "ar_indec_ipc_mensual"
+
+
+def test_fallback_no_rescata_reservas_netas(monkeypatch: pytest.MonkeyPatch) -> None:
+    """reservas netas debe seguir en quoted_only aunque el LLM no elija serie."""
+    _AgentDoble.creados.clear()
+    monkeypatch.setattr(
+        "tigani_broadcast.official_data_charts.resolver.Agent",
+        _AgentDoble,
+    )
+    resolver = AgnoMentionResolver(_Modelo(), max_retries=0)
+    agent = _AgentDoble.creados[0]
+    agent.content = _LLMResolutionPayload(
+        catalog_id=None,
+        narrative_mode="trend_with_callout",
+        rationale="Reservas netas sin serie oficial.",
+    )
+
+    package = resolve_chapters_to_artifacts(
+        ChapterizedTranscript(chapters=[_chapter(_mention(2, "reservas netas", "negativas"))]),
+        date(2025, 12, 11),
+        resolver,
+        _FetcherFake(),  # type: ignore[arg-type]
+    )
+
+    assert len(package.items) == 1
+    quoted = package.items[0]
+    assert quoted.resolution_status == "quoted_only"
+    assert quoted.indicator_label == "reservas netas"
+    assert quoted.narrative is None
+    assert quoted.series is None
 
 
 def test_resolve_chapters_degrada_resolution_validation_y_sigue() -> None:
+    """Sin alias inequívoco, el error de resolución sigue degradando a fetch_error."""
     publish = date(2025, 12, 11)
-    broken = _mention(1, "índice de inflación", "2.5%")
+    broken = _mention(1, "colocación puntual de bono", "4600 M")
     ok = _mention(2, "swap", "900 M")
     package = resolve_chapters_to_artifacts(
         ChapterizedTranscript(chapters=[_chapter(broken, ok)]),
@@ -417,7 +687,7 @@ def test_resolve_chapters_degrada_resolution_validation_y_sigue() -> None:
                 )
             },
             errors={
-                "índice de inflación": ResolutionValidationError(
+                "colocación puntual de bono": ResolutionValidationError(
                     "catalog_id fuera del catálogo cerrado: 'serie_falsa'"
                 )
             },
@@ -430,3 +700,108 @@ def test_resolve_chapters_degrada_resolution_validation_y_sigue() -> None:
     assert "fuera del catálogo" in (package.items[0].error_message or "")
     assert package.items[1].resolution_status == "quoted_only"
     assert package.items[1].indicator_label == "swap"
+
+
+def test_resolve_chapters_rescata_inflacion_si_resolver_falla() -> None:
+    """Aunque el resolver fake falle, índice de inflación se rescata con fallback."""
+    publish = date(2025, 12, 11)
+    inflation = _mention(1, "índice de inflación", "2.5%")
+    package = resolve_chapters_to_artifacts(
+        ChapterizedTranscript(chapters=[_chapter(inflation)]),
+        publish,
+        _ResolverFake(
+            errors={
+                "índice de inflación": ResolutionValidationError(
+                    "catalog_id fuera del catálogo cerrado: 'serie_falsa'"
+                )
+            },
+        ),
+        _FetcherFake({"ar_indec_ipc_mensual": _ipc_series()}),  # type: ignore[arg-type]
+    )
+    assert len(package.items) == 1
+    assert package.items[0].resolution_status == "verified_series"
+    assert package.items[0].narrative is not None
+    assert package.items[0].series is not None
+    assert package.items[0].series.catalog_id == "ar_indec_ipc_mensual"
+
+
+def test_regresion_inflacion_quoted_only_con_contexto_reservas(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """
+    Caso real kP_G1sAStQE: LLM devuelve quoted_only citando ar_indec_ipc_interanual
+    y el summary del capítulo menciona reservas netas. Debe rescatar IPC mensual.
+    """
+    _AgentDoble.creados.clear()
+    monkeypatch.setattr(
+        "tigani_broadcast.official_data_charts.resolver.Agent",
+        _AgentDoble,
+    )
+    resolver = AgnoMentionResolver(_Modelo(), max_retries=0)
+    agent = _AgentDoble.creados[0]
+    agent.content = _LLMResolutionPayload(
+        catalog_id="quoted_only",
+        narrative_mode="trend_with_callout",
+        rationale=(
+            "La mención se refiere al 'índice de inflación' con valor '2.5%' y "
+            "tiempo de referencia 'hoy', lo cual corresponde al indicador "
+            "'ar_indec_ipc_interanual' del catálogo."
+        ),
+    )
+    chapter = _chapter(
+        _mention(1, "índice de inflación", "2.5%", time_reference="hoy"),
+        title="El contexto de la inflación y su comparación histórica",
+        summary=(
+            "El índice de inflación alcanzó 2.5% hoy. Las reservas netas son "
+            "negativas en 17,000 millones, mientras que en 2015 tenían 8,000 millones."
+        ),
+    )
+    package = resolve_chapters_to_artifacts(
+        ChapterizedTranscript(chapters=[chapter]),
+        date(2025, 12, 11),
+        resolver,
+        _FetcherFake({"ar_indec_ipc_mensual": _ipc_series()}),  # type: ignore[arg-type]
+    )
+    assert len(package.items) == 1
+    artifact = package.items[0]
+    assert artifact.resolution_status == "verified_series"
+    assert artifact.series is not None
+    assert artifact.series.catalog_id == "ar_indec_ipc_mensual"
+    assert artifact.narrative is not None
+
+
+def test_regresion_inflacion_llm_elige_ipc_interanual(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """LLM elige ar_indec_ipc_interanual ante 'índice de inflación' → forzar mensual."""
+    _AgentDoble.creados.clear()
+    monkeypatch.setattr(
+        "tigani_broadcast.official_data_charts.resolver.Agent",
+        _AgentDoble,
+    )
+    resolver = AgnoMentionResolver(_Modelo(), max_retries=0)
+    agent = _AgentDoble.creados[0]
+    agent.content = _LLMResolutionPayload(
+        catalog_id="ar_indec_ipc_interanual",
+        narrative_mode="trend_with_callout",
+        rationale="Mapear a IPC interanual.",
+    )
+    package = resolve_chapters_to_artifacts(
+        ChapterizedTranscript(
+            chapters=[
+                _chapter(
+                    _mention(1, "índice de inflación", "2.5%", time_reference="hoy"),
+                    summary="Las reservas netas son negativas; inflación 2.5% hoy.",
+                )
+            ]
+        ),
+        date(2025, 12, 11),
+        resolver,
+        _FetcherFake({"ar_indec_ipc_mensual": _ipc_series()}),  # type: ignore[arg-type]
+    )
+    assert len(package.items) == 1
+    artifact = package.items[0]
+    assert artifact.resolution_status == "verified_series"
+    assert artifact.series is not None
+    assert artifact.series.catalog_id == "ar_indec_ipc_mensual"
+    assert artifact.narrative is not None

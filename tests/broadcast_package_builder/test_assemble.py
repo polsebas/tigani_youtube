@@ -292,6 +292,28 @@ def test_copia_portable_html_e_imagenes(tmp_path: Path) -> None:
     assert manifest.video_url == "https://youtu.be/abc"
 
 
+def test_copia_echarts_min_js_a_slides_charts(tmp_path: Path) -> None:
+    chapters = _chapters()
+    chart = _chart(tmp_path)
+    assert chart.html_path is not None
+    # Simula el runtime offline escrito por write_charts_package junto a las placas.
+    echarts_src = Path(chart.html_path).parent / "echarts.min.js"
+    echarts_src.write_text("/* apache echarts stub */", encoding="utf-8")
+    output_dir = tmp_path / "package"
+
+    assemble_broadcast_package(
+        chapters,
+        ChartsPackage(publish_date=date(2025, 11, 25), items=[chart]),
+        VisualAssetsPackage(items=[_visual(tmp_path)]),
+        output_dir=output_dir,
+        video_title="Piloto",
+    )
+
+    dest = output_dir / "slides" / "charts" / "echarts.min.js"
+    assert dest.is_file()
+    assert dest.read_text(encoding="utf-8") == "/* apache echarts stub */"
+
+
 def test_excluye_fetch_error_por_defecto(tmp_path: Path) -> None:
     chapters = _chapters()
     charts = ChartsPackage(

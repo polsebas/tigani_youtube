@@ -1,25 +1,52 @@
-"""Render determinista de charts.json, charts.md y placas HTML 16:9 (SVG puro)."""
+"""Render determinista de charts.json, charts.md y placas HTML 16:9 (ECharts offline)."""
 
 from __future__ import annotations
 
 import html
 import json
+import shutil
 from datetime import date
 from pathlib import Path
+from typing import Any
 
 from tigani_broadcast.official_data_charts.models import (
     ChartArtifact,
+    ChartNarrative,
     ChartsPackage,
     SeriesMetrics,
     SeriesObservation,
 )
 
-_SVG_WIDTH = 640
-_SVG_HEIGHT = 280
-_SVG_PAD_L = 56
-_SVG_PAD_R = 20
-_SVG_PAD_T = 20
-_SVG_PAD_B = 44
+_DENSE_LABEL_MAX = 14
+_ASSETS_DIR = Path(__file__).resolve().parent / "assets"
+_ECHARTS_ASSET = _ASSETS_DIR / "echarts.min.js"
+_ECHARTS_FILENAME = "echarts.min.js"
+
+_MONTHS_SHORT_ES = (
+    "Ene",
+    "Feb",
+    "Mar",
+    "Abr",
+    "May",
+    "Jun",
+    "Jul",
+    "Ago",
+    "Sep",
+    "Oct",
+    "Nov",
+    "Dic",
+)
+_FREQUENCY_ES = {
+    "daily": "Diaria",
+    "monthly": "Mensual",
+    "quarterly": "Trimestral",
+    "annual": "Anual",
+}
+_BAND_FILLS = (
+    "rgba(61,184,168,0.12)",
+    "rgba(232,184,74,0.12)",
+    "rgba(157,176,195,0.14)",
+)
 
 
 def render_charts_json(package: ChartsPackage) -> str:
@@ -61,25 +88,27 @@ def render_charts_markdown(package: ChartsPackage) -> str:
 
 
 def render_artifact_html(artifact: ChartArtifact, publish_date: date) -> str:
-    """Placa HTML5 16:9 autocontenida para OBS Browser Source (cero CDN/JS externo)."""
+    """Placa HTML5 16:9 autocontenida para OBS Browser Source (cero CDN)."""
     if artifact.resolution_status == "verified_series":
         body = _verified_body(artifact, publish_date)
         status_class = "verified"
         status_label = "Serie oficial verificada"
+        head_extra = f'<script src="{_ECHARTS_FILENAME}"></script>\n'
     elif artifact.resolution_status == "quoted_only":
         body = _quoted_body(artifact)
         status_class = "quoted"
         status_label = "Dato citado"
+        head_extra = ""
     else:
         body = _fetch_error_body(artifact)
         status_class = "error"
         status_label = "Error de fetch"
+        head_extra = ""
 
-    title = html.escape(artifact.indicator_label)
+    title = html.escape(_capitalize_headline(artifact.indicator_label))
     status = html.escape(artifact.resolution_status)
     clock = html.escape(artifact.timestamp)
     label = html.escape(status_label)
-    # El CSS no puede ir dentro de un f-string: contiene llaves literales.
     return (
         "<!DOCTYPE html>\n"
         '<html lang="es">\n'
@@ -87,6 +116,7 @@ def render_artifact_html(artifact: ChartArtifact, publish_date: date) -> str:
         '<meta charset="utf-8"/>\n'
         '<meta name="viewport" content="width=device-width, initial-scale=1"/>\n'
         f"<title>{title}</title>\n"
+        f"{head_extra}"
         "<style>\n"
         f"{_PLATE_CSS}\n"
         "</style>\n"
@@ -110,8 +140,11 @@ def write_charts_package(
     charts_dir: Path,
     markdown_path: Path | None = None,
 ) -> ChartsPackage:
-    """Escribe HTML por artefacto, actualiza html_path y persiste JSON/Markdown."""
+    """Escribe HTML por artefacto, copia ECharts offline y persiste JSON/Markdown."""
+    charts_dir = Path(charts_dir)
     charts_dir.mkdir(parents=True, exist_ok=True)
+    copy_echarts_runtime(charts_dir)
+
     updated: list[ChartArtifact] = []
     for index, artifact in enumerate(package.items):
         filename = f"ch{artifact.chapter_index:02d}_cue{artifact.cue_index:03d}_{index:02d}.html"
@@ -131,6 +164,22 @@ def write_charts_package(
     return result
 
 
+def copy_echarts_runtime(destination_dir: Path) -> Path:
+    """Copia `echarts.min.js` vendoreado a un directorio de placas (offline OBS)."""
+    destination_dir = Path(destination_dir)
+    destination_dir.mkdir(parents=True, exist_ok=True)
+    if not _ECHARTS_ASSET.is_file():
+        raise FileNotFoundError(f"falta el runtime ECharts vendoreado: {_ECHARTS_ASSET}")
+    dest = destination_dir / _ECHARTS_FILENAME
+    shutil.copy2(_ECHARTS_ASSET, dest)
+    return dest
+
+
+def echarts_asset_path() -> Path:
+    """Ruta al `echarts.min.js` embebido en el paquete."""
+    return _ECHARTS_ASSET
+
+
 _PLATE_CSS = """
 :root {
   --bg: #0f1720;
@@ -148,22 +197,27 @@ html, body {
   padding: 0;
   width: 100%;
   height: 100%;
+  min-width: 960px;
+  min-height: 540px;
+  overflow: auto;
   background: #000;
   color: var(--ink);
   font-family: "IBM Plex Sans", "Segoe UI", sans-serif;
 }
 .plate {
   width: 100%;
-  max-width: 1920px;
+  height: 100%;
+  min-width: 960px;
+  min-height: 540px;
   margin: 0 auto;
-  aspect-ratio: 16 / 9;
+  overflow: hidden;
   background:
     radial-gradient(1200px 500px at 10% -10%, #1d3348 0%, transparent 55%),
     linear-gradient(160deg, #101820 0%, #0c1219 100%);
   display: grid;
-  grid-template-rows: auto 1fr auto;
-  padding: 2.2% 2.8%;
-  gap: 1.2%;
+  grid-template-rows: auto minmax(0, 1fr) auto;
+  padding: 1.6% 2.4% 1.2%;
+  gap: 0.8%;
 }
 .banner {
   display: flex;
@@ -171,7 +225,7 @@ html, body {
   align-items: center;
   border-bottom: 1px solid var(--line);
   padding-bottom: 0.6%;
-  font-size: clamp(14px, 1.4vw, 22px);
+  font-size: clamp(14px, 1.4vw, 44px);
   letter-spacing: 0.04em;
   text-transform: uppercase;
 }
@@ -186,14 +240,59 @@ html, body {
   min-height: 0;
 }
 .content.single { grid-template-columns: 1fr; }
+.content.narrative {
+  grid-template-columns: 1fr;
+  grid-template-rows: auto minmax(0, 1fr);
+  min-height: 0;
+  overflow: hidden;
+}
+.content > .stack {
+  display: grid;
+  grid-template-rows: auto auto auto minmax(0, 1fr);
+  min-height: 0;
+  gap: 0.6%;
+}
+.headline-row {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 1.5%;
+  flex-wrap: wrap;
+  flex-shrink: 0;
+}
 .headline {
-  font-size: clamp(28px, 3.4vw, 56px);
+  font-size: clamp(26px, 3.1vw, 104px);
   font-weight: 700;
   line-height: 1.05;
-  margin: 0 0 0.4em;
+  margin: 0 0 0.25em;
+}
+.badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.35em;
+  padding: 0.28em 0.7em;
+  border-radius: 999px;
+  border: 1px solid var(--line);
+  background: color-mix(in srgb, var(--panel) 80%, black);
+  font-size: clamp(14px, 1.5vw, 48px);
+  font-weight: 700;
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+.badge.up {
+  color: var(--danger);
+  border-color: color-mix(in srgb, var(--danger) 45%, var(--line));
+}
+.badge.down {
+  color: var(--accent);
+  border-color: color-mix(in srgb, var(--accent) 45%, var(--line));
+}
+.badge.flat {
+  color: var(--warn);
+  border-color: color-mix(in srgb, var(--warn) 45%, var(--line));
 }
 .value {
-  font-size: clamp(36px, 5vw, 84px);
+  font-size: clamp(36px, 5vw, 168px);
   font-weight: 700;
   color: var(--accent);
   margin: 0 0 0.25em;
@@ -201,7 +300,7 @@ html, body {
 }
 .meta, .side, .legend, .footer {
   color: var(--muted);
-  font-size: clamp(14px, 1.35vw, 22px);
+  font-size: clamp(14px, 1.35vw, 44px);
   line-height: 1.35;
 }
 .side {
@@ -216,20 +315,63 @@ html, body {
   background: color-mix(in srgb, var(--panel) 70%, transparent);
   border: 1px solid var(--line);
   border-radius: 12px;
-  padding: 2%;
+  padding: 0.6% 0.8%;
   min-height: 0;
+  overflow: hidden;
+  height: 100%;
 }
-.chart-wrap svg { width: 100%; height: auto; display: block; }
+#chart {
+  width: 100%;
+  height: 100%;
+}
 .legend {
   margin-top: 0.8em;
   padding: 0.7em 0.9em;
   border-left: 3px solid var(--warn);
   background: rgba(232, 184, 74, 0.08);
 }
+.kpi-bar {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 1%;
+  margin: 0 0 0.45%;
+  flex-shrink: 0;
+}
+.kpi-card {
+  background: color-mix(in srgb, var(--panel) 88%, black);
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  padding: 0.45% 0.9%;
+  min-width: 0;
+}
+.kpi-card .kpi-label {
+  color: var(--muted);
+  font-size: clamp(10px, 0.95vw, 32px);
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  margin: 0 0 0.15em;
+}
+.kpi-card .kpi-value {
+  color: var(--ink);
+  font-size: clamp(14px, 1.55vw, 48px);
+  font-weight: 700;
+  font-variant-numeric: tabular-nums;
+  margin: 0;
+}
+.kpi-card .kpi-detail {
+  color: var(--muted);
+  font-size: clamp(10px, 0.95vw, 28px);
+  margin: 0.15em 0 0;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
 .footer {
   border-top: 1px solid var(--line);
-  padding-top: 0.7%;
-  font-size: clamp(12px, 1.1vw, 18px);
+  padding-top: 0.45%;
+  font-size: clamp(11px, 1.0vw, 36px);
+  flex-shrink: 0;
+  min-height: 0;
 }
 .footer .prov {
   color: var(--warn);
@@ -242,34 +384,62 @@ def _verified_body(artifact: ChartArtifact, publish_date: date) -> str:
     assert artifact.series is not None and artifact.metrics is not None
     series = artifact.series
     metrics = artifact.metrics
-    svg = render_series_svg(series.observations, metrics)
+    narrative = artifact.narrative
+    chart_block = _echarts_chart_html(
+        series.observations,
+        metrics,
+        narrative=narrative,
+        unit=series.unit,
+    )
     change = _format_percent(metrics.percent_change)
     period = f"{metrics.start_date.isoformat()} → {metrics.end_date.isoformat()}"
     provisional = ""
     if metrics.has_provisional_flags:
         flags = ", ".join(html.escape(flag) for flag in metrics.flags_present)
         provisional = f'<div class="prov">Datos provisorios / estimados (signos: {flags})</div>'
-    latest = html.escape(_format_number(metrics.latest_value))
-    pub = html.escape(publish_date.isoformat())
+    latest = html.escape(_format_display_value(metrics.latest_value, series.unit))
+    corte = html.escape(_format_corte(publish_date))
+    title = html.escape(_capitalize_headline(artifact.indicator_label))
+    frequency_es = html.escape(_frequency_label(series.frequency))
     footer = (
         f"{html.escape(series.source_attribution)} · "
         f"series_id={html.escape(series.series_id)} · "
         f"período {html.escape(period)}"
     )
+
+    if narrative is not None:
+        badge_html = _headline_badge_html(narrative)
+        kpi_html = _kpi_bar_html(narrative)
+        return f"""
+  <section class="content narrative">
+    <div class="headline-row">
+      <h1 class="headline">{title}</h1>
+      {badge_html}
+    </div>
+    <div class="chart-wrap">{chart_block}</div>
+  </section>
+  <footer class="footer">
+    {kpi_html}
+    <div>{footer}</div>
+    <p class="meta">Citado: {html.escape(artifact.raw_value_text)} · {corte}</p>
+    {provisional}
+  </footer>
+"""
+
     return f"""
   <section class="content">
-    <div>
-      <h1 class="headline">{html.escape(artifact.indicator_label)}</h1>
+    <div class="stack">
+      <h1 class="headline">{title}</h1>
       <p class="value">{html.escape(artifact.raw_value_text)}</p>
-      <p class="meta">Citado en exposición · publish_date {pub}</p>
-      <div class="chart-wrap">{svg}</div>
+      <p class="meta">Citado en exposición · {corte}</p>
+      <div class="chart-wrap">{chart_block}</div>
     </div>
     <aside class="side">
       <strong>Último dato oficial</strong>
-      <div class="value" style="font-size:clamp(28px,3.2vw,48px)">{latest}</div>
+      <div class="value" style="font-size:clamp(28px,3.2vw,96px)">{latest}</div>
       <p class="meta">Variación en el tramo: {html.escape(change)}</p>
       <p class="meta">Unidad: {html.escape(series.unit)}</p>
-      <p class="meta">Frecuencia: {html.escape(series.frequency)}</p>
+      <p class="meta">Frecuencia: {frequency_es}</p>
     </aside>
   </section>
   <footer class="footer">
@@ -279,12 +449,338 @@ def _verified_body(artifact: ChartArtifact, publish_date: date) -> str:
 """
 
 
+def build_echarts_option(
+    observations: list[SeriesObservation],
+    metrics: SeriesMetrics,
+    *,
+    narrative: ChartNarrative | None = None,
+    unit: str = "",
+) -> dict[str, Any]:
+    """Option ECharts determinista (serializable a JSON) para placas verified_series."""
+    points = [(obs.obs_date, obs.value) for obs in observations if obs.value is not None]
+    # El eje se deriva de los puntos; metrics queda en la firma por contrato del caller.
+    del metrics
+    if not points:
+        return {
+            "animation": False,
+            "title": {
+                "text": "Sin datos",
+                "left": "center",
+                "top": "middle",
+                "textStyle": {"color": "#9db0c3", "fontSize": 18},
+            },
+        }
+
+    categories = _category_labels([item[0] for item in points])
+    values = [float(item[1]) for item in points]
+    n = len(values)
+    show_all_labels = n <= _DENSE_LABEL_MAX
+    y_min, y_max = _y_axis_bounds(values)
+
+    series_payload: dict[str, Any] = {
+        "type": "line",
+        "smooth": 0.2,
+        "symbol": "circle",
+        "symbolSize": 9,
+        "data": values,
+        "lineStyle": {"width": 3, "color": "#3db8a8"},
+        "itemStyle": {"color": "#3db8a8"},
+        "areaStyle": {
+            "color": {
+                "type": "linear",
+                "x": 0,
+                "y": 0,
+                "x2": 0,
+                "y2": 1,
+                "colorStops": [
+                    {"offset": 0, "color": "rgba(61,184,168,0.45)"},
+                    {"offset": 1, "color": "rgba(61,184,168,0.03)"},
+                ],
+            }
+        },
+        "label": {
+            "show": show_all_labels,
+            "position": "top",
+            "fontSize": 15,
+            "fontWeight": 600,
+            "color": "#f4f7fb",
+            "formatter": "__LABEL_FORMATTER__",
+        },
+    }
+
+    if not show_all_labels:
+        series_payload["markPoint"] = _mark_point_payload(categories, values, unit=unit)
+
+    if narrative is not None and narrative.regime_bands:
+        series_payload["markArea"] = _mark_area_payload(
+            narrative,
+            dates=[item[0] for item in points],
+            categories=categories,
+        )
+
+    return {
+        "animation": True,
+        "animationDuration": 750,
+        "animationEasing": "cubicOut",
+        "grid": {"left": 16, "right": 28, "top": 44, "bottom": 34, "containLabel": True},
+        "tooltip": {"trigger": "axis", "show": False},
+        "xAxis": {
+            "type": "category",
+            "boundaryGap": False,
+            "data": categories,
+            "axisLine": {"lineStyle": {"color": "#2b3b4d"}},
+            "axisTick": {"show": False},
+            "axisLabel": {
+                "show": True,
+                "color": "#c8d6e5",
+                "fontSize": 15,
+                "interval": 0 if show_all_labels else "auto",
+            },
+        },
+        "yAxis": {
+            "type": "value",
+            "scale": True,
+            "min": y_min,
+            "max": y_max,
+            "axisLine": {"show": False},
+            "axisTick": {"show": False},
+            "axisLabel": {
+                "color": "#c8d6e5",
+                "fontSize": 14,
+                "formatter": "__Y_FORMATTER__",
+            },
+            "splitLine": {
+                "show": True,
+                "lineStyle": {"type": "dashed", "color": "#243242", "width": 1},
+            },
+        },
+        "series": [series_payload],
+        "_tiganiUnit": unit,
+    }
+
+
+def _echarts_chart_html(
+    observations: list[SeriesObservation],
+    metrics: SeriesMetrics,
+    *,
+    narrative: ChartNarrative | None,
+    unit: str,
+) -> str:
+    option = build_echarts_option(
+        observations,
+        metrics,
+        narrative=narrative,
+        unit=unit,
+    )
+    option_json = json.dumps(option, ensure_ascii=False)
+    option_json = option_json.replace("</", "<\\/")
+    # Reemplazar placeholders de formatters por funciones JS reales.
+    option_json = option_json.replace('"__LABEL_FORMATTER__"', "null")
+    option_json = option_json.replace('"__Y_FORMATTER__"', "null")
+    unit_json = json.dumps(unit, ensure_ascii=False)
+    return f"""
+<div id="chart" role="img" aria-label="serie oficial"></div>
+<script>
+(function () {{
+  const unit = {unit_json};
+  function formatValue(value) {{
+    const n = Number(value);
+    if (!Number.isFinite(n)) return "";
+    const body = (Math.abs(n - Math.round(n)) < 1e-9)
+      ? String(Math.round(n))
+      : n.toFixed(1).replace(".", ",");
+    const u = String(unit || "").trim().toLowerCase();
+    if (u === "%" || u === "p.p." || u === "pp" || u.includes("%") || u.includes("porcent")) {{
+      return body + "%";
+    }}
+    return body;
+  }}
+  const option = {option_json};
+  if (option.yAxis && option.yAxis.axisLabel) {{
+    option.yAxis.axisLabel.formatter = function (value) {{ return formatValue(value); }};
+  }}
+  if (option.series && option.series[0] && option.series[0].label && option.series[0].label.show) {{
+    option.series[0].label.formatter = function (params) {{ return formatValue(params.value); }};
+  }}
+  const el = document.getElementById("chart");
+  const chart = echarts.init(el, null, {{ renderer: "canvas" }});
+  chart.setOption(option);
+  const wrap = (el && el.closest) ? el.closest(".chart-wrap") : el;
+  const axisX = option.xAxis && option.xAxis.axisLabel;
+  const axisY = option.yAxis && option.yAxis.axisLabel;
+  const pointLabel = option.series && option.series[0] && option.series[0].label;
+  const baseX = (axisX && axisX.fontSize) || 15;
+  const baseY = (axisY && axisY.fontSize) || 14;
+  const baseLabel = (pointLabel && pointLabel.fontSize) || 15;
+  let scaleFrame = 0;
+  function fitChart() {{
+    const container = wrap || el;
+    if (!container) return;
+    chart.resize();
+    if (scaleFrame) cancelAnimationFrame(scaleFrame);
+    scaleFrame = requestAnimationFrame(function () {{
+      scaleFrame = 0;
+      const scale = Math.max(0.85, Math.min(2.0, container.clientWidth / 1280));
+      const patch = {{
+        xAxis: {{ axisLabel: {{ fontSize: Math.round(baseX * scale) }} }},
+        yAxis: {{ axisLabel: {{ fontSize: Math.round(baseY * scale) }} }}
+      }};
+      const showLabels = pointLabel && pointLabel.show;
+      if (showLabels) {{
+        patch.series = [{{ label: {{ fontSize: Math.round(baseLabel * scale) }} }}];
+      }}
+      chart.setOption(patch);
+    }});
+  }}
+  window.addEventListener("resize", fitChart);
+  if (wrap && typeof ResizeObserver !== "undefined") {{
+    const observer = new ResizeObserver(fitChart);
+    observer.observe(wrap);
+  }}
+  fitChart();
+}})();
+</script>
+"""
+
+
+def _y_axis_bounds(values: list[float]) -> tuple[float, float]:
+    """Margen cómodo para que etiquetas y el piso de la curva no se recorten."""
+    v_min = min(values)
+    v_max = max(values)
+    span = max(v_max - v_min, 0.5)
+    pad = span * 0.18
+    y_min = round(v_min - pad, 1)
+    y_max = round(v_max + pad, 1)
+    if all(value >= 0 for value in values) and y_min < 0:
+        y_min = 0.0
+    if y_max <= y_min:
+        y_max = round(y_min + span, 1)
+    return float(y_min), float(y_max)
+
+
+def _category_labels(dates: list[date]) -> list[str]:
+    labels: list[str] = []
+    for index, obs_date in enumerate(dates):
+        show_year = index == 0 or index == len(dates) - 1
+        if not show_year and index > 0 and obs_date.year != dates[index - 1].year:
+            show_year = True
+        labels.append(_format_month_tick(obs_date, show_year=show_year))
+    return labels
+
+
+def _format_month_tick(obs_date: date, *, show_year: bool) -> str:
+    month = _MONTHS_SHORT_ES[obs_date.month - 1]
+    if show_year:
+        return f"{month} {obs_date.year % 100:02d}"
+    return month
+
+
+def _mark_point_payload(
+    categories: list[str],
+    values: list[float],
+    *,
+    unit: str,
+) -> dict[str, Any]:
+    min_i = min(range(len(values)), key=lambda i: values[i])
+    max_i = max(range(len(values)), key=lambda i: values[i])
+    last_i = len(values) - 1
+    points = []
+    for index, name in ((max_i, "Máx"), (min_i, "Mín"), (last_i, "Último")):
+        points.append(
+            {
+                "name": name,
+                "coord": [categories[index], values[index]],
+                "value": values[index],
+                "label": {
+                    "show": True,
+                    "formatter": _format_display_value(values[index], unit),
+                    "color": "#f4f7fb",
+                    "fontSize": 14,
+                    "fontWeight": 700,
+                },
+                "itemStyle": {"color": "#e8b84a"},
+            }
+        )
+    return {
+        "symbol": "pin",
+        "symbolSize": 48,
+        "data": points,
+    }
+
+
+def _mark_area_payload(
+    narrative: ChartNarrative,
+    *,
+    dates: list[date],
+    categories: list[str],
+) -> dict[str, Any]:
+    data: list[list[dict[str, Any]]] = []
+    for index, band in enumerate(narrative.regime_bands):
+        start_i = _nearest_index(dates, band.start_date)
+        end_i = _nearest_index(dates, band.end_date)
+        if start_i > end_i:
+            start_i, end_i = end_i, start_i
+        fill = _BAND_FILLS[index % len(_BAND_FILLS)]
+        safe_label = html.escape(band.label)
+        data.append(
+            [
+                {
+                    "name": safe_label,
+                    "xAxis": categories[start_i],
+                    "itemStyle": {"color": fill},
+                    "label": {
+                        "show": True,
+                        "position": "insideTop",
+                        "color": "#9db0c3",
+                        "fontSize": 12,
+                        "formatter": safe_label,
+                    },
+                },
+                {"xAxis": categories[end_i]},
+            ]
+        )
+    return {"silent": True, "data": data}
+
+
+def _nearest_index(dates: list[date], target: date) -> int:
+    return min(range(len(dates)), key=lambda i: abs((dates[i] - target).days))
+
+
+def _headline_badge_html(narrative: ChartNarrative) -> str:
+    if narrative.headline_badge is None:
+        return ""
+    direction = narrative.delta_direction or "flat"
+    return (
+        f'<span class="badge {html.escape(direction)}">'
+        f"{html.escape(narrative.headline_badge)}</span>"
+    )
+
+
+def _kpi_bar_html(narrative: ChartNarrative) -> str:
+    if not narrative.kpis:
+        return ""
+    cards: list[str] = []
+    for kpi in narrative.kpis[:3]:
+        detail = ""
+        if kpi.detail:
+            detail = f'<p class="kpi-detail">{html.escape(kpi.detail)}</p>'
+        cards.append(
+            '<div class="kpi-card">'
+            f'<p class="kpi-label">{html.escape(kpi.label)}</p>'
+            f'<p class="kpi-value">{html.escape(kpi.formatted_value)}</p>'
+            f"{detail}"
+            "</div>"
+        )
+    return f'<div class="kpi-bar">{"".join(cards)}</div>'
+
+
 def _quoted_body(artifact: ChartArtifact) -> str:
     time_ref = artifact.time_reference or "sin referencia temporal explícita"
+    title = html.escape(_capitalize_headline(artifact.indicator_label))
     return f"""
   <section class="content single">
     <div>
-      <h1 class="headline">{html.escape(artifact.indicator_label)}</h1>
+      <h1 class="headline">{title}</h1>
       <p class="value">{html.escape(artifact.raw_value_text)}</p>
       <p class="meta">Referencia temporal: {html.escape(time_ref)}</p>
       <p class="meta">Timestamp: {html.escape(artifact.timestamp)}</p>
@@ -299,10 +795,11 @@ def _quoted_body(artifact: ChartArtifact) -> str:
 
 def _fetch_error_body(artifact: ChartArtifact) -> str:
     assert artifact.error_message is not None
+    title = html.escape(_capitalize_headline(artifact.indicator_label))
     return f"""
   <section class="content single">
     <div>
-      <h1 class="headline">{html.escape(artifact.indicator_label)}</h1>
+      <h1 class="headline">{title}</h1>
       <p class="value">{html.escape(artifact.raw_value_text)}</p>
       <div class="legend">No se pudo obtener la serie oficial. No se inventaron datos.</div>
       <p class="meta">Error: {html.escape(artifact.error_message)}</p>
@@ -314,90 +811,6 @@ def _fetch_error_body(artifact: ChartArtifact) -> str:
 """
 
 
-def render_series_svg(
-    observations: list[SeriesObservation],
-    metrics: SeriesMetrics,
-) -> str:
-    """SVG puro determinista a partir de observaciones válidas."""
-    points = [(obs.obs_date, obs.value) for obs in observations if obs.value is not None]
-    if not points:
-        return '<svg viewBox="0 0 640 280" role="img" aria-label="sin datos"></svg>'
-
-    plot_w = _SVG_WIDTH - _SVG_PAD_L - _SVG_PAD_R
-    plot_h = _SVG_HEIGHT - _SVG_PAD_T - _SVG_PAD_B
-    min_v = metrics.min_value
-    max_v = metrics.max_value
-    if min_v == max_v:
-        pad = abs(min_v) * 0.05 if min_v != 0 else 1.0
-        min_v -= pad
-        max_v += pad
-    span = max_v - min_v
-
-    n = len(points)
-    coords: list[tuple[float, float]] = []
-    for index, (_obs_date, value) in enumerate(points):
-        assert value is not None
-        x = _SVG_PAD_L if n == 1 else _SVG_PAD_L + (plot_w * index / (n - 1))
-        y = _SVG_PAD_T + plot_h * (1.0 - ((value - min_v) / span))
-        coords.append((x, y))
-
-    polyline = " ".join(f"{x:.2f},{y:.2f}" for x, y in coords)
-    area_pts = (
-        f"{coords[0][0]:.2f},{_SVG_PAD_T + plot_h:.2f} "
-        + polyline
-        + f" {coords[-1][0]:.2f},{_SVG_PAD_T + plot_h:.2f}"
-    )
-    dots = "".join(f'<circle cx="{x:.2f}" cy="{y:.2f}" r="3.5" fill="#3db8a8"/>' for x, y in coords)
-    start_label = html.escape(metrics.start_date.isoformat())
-    end_label = html.escape(metrics.end_date.isoformat())
-    min_label = html.escape(_format_number(metrics.min_value))
-    max_label = html.escape(_format_number(metrics.max_value))
-    y_axis_bottom = _SVG_PAD_T + plot_h
-    x_axis_right = _SVG_PAD_L + plot_w
-    return "\n".join(
-        [
-            (
-                f'<svg viewBox="0 0 {_SVG_WIDTH} {_SVG_HEIGHT}" '
-                'role="img" aria-label="serie oficial">'
-            ),
-            (f'<rect x="0" y="0" width="{_SVG_WIDTH}" height="{_SVG_HEIGHT}" fill="transparent"/>'),
-            (
-                f'<line x1="{_SVG_PAD_L}" y1="{_SVG_PAD_T}" '
-                f'x2="{_SVG_PAD_L}" y2="{y_axis_bottom}" '
-                'stroke="#2b3b4d" stroke-width="1.5"/>'
-            ),
-            (
-                f'<line x1="{_SVG_PAD_L}" y1="{y_axis_bottom}" '
-                f'x2="{x_axis_right}" y2="{y_axis_bottom}" '
-                'stroke="#2b3b4d" stroke-width="1.5"/>'
-            ),
-            f'<polygon points="{area_pts}" fill="rgba(61,184,168,0.18)"/>',
-            (
-                f'<polyline points="{polyline}" fill="none" stroke="#3db8a8" '
-                'stroke-width="2.5" stroke-linejoin="round" stroke-linecap="round"/>'
-            ),
-            dots,
-            (
-                f'<text x="{_SVG_PAD_L}" y="{_SVG_HEIGHT - 14}" '
-                f'fill="#9db0c3" font-size="12">{start_label}</text>'
-            ),
-            (
-                f'<text x="{x_axis_right}" y="{_SVG_HEIGHT - 14}" '
-                f'fill="#9db0c3" font-size="12" text-anchor="end">{end_label}</text>'
-            ),
-            (
-                f'<text x="{_SVG_PAD_L - 8}" y="{_SVG_PAD_T + 4}" '
-                f'fill="#9db0c3" font-size="12" text-anchor="end">{max_label}</text>'
-            ),
-            (
-                f'<text x="{_SVG_PAD_L - 8}" y="{y_axis_bottom}" '
-                f'fill="#9db0c3" font-size="12" text-anchor="end">{min_label}</text>'
-            ),
-            "</svg>",
-        ]
-    )
-
-
 def _markdown_detail(item: ChartArtifact) -> str:
     if item.resolution_status == "verified_series":
         assert item.series is not None and item.metrics is not None
@@ -405,7 +818,8 @@ def _markdown_detail(item: ChartArtifact) -> str:
         return (
             f"{item.series.source_attribution}; "
             f"{item.metrics.start_date.isoformat()}→{item.metrics.end_date.isoformat()}; "
-            f"último={_format_number(item.metrics.latest_value)}; var={change}"
+            f"último={_format_display_value(item.metrics.latest_value, item.series.unit)}; "
+            f"var={change}"
         )
     if item.resolution_status == "quoted_only":
         ref = item.time_reference or "—"
@@ -416,13 +830,43 @@ def _markdown_detail(item: ChartArtifact) -> str:
 def _format_percent(value: float | None) -> str:
     if value is None:
         return "n/d"
-    return f"{value:+.2f}%"
+    sign = "+" if value >= 0 else "−"
+    return f"{sign}{_fmt_es_decimal(abs(value), 1)}%"
 
 
 def _format_number(value: float) -> str:
     if abs(value - round(value)) < 1e-9:
-        return f"{value:.0f}"
-    return f"{value:.4g}"
+        as_int = int(round(value))
+        if abs(as_int) >= 1000:
+            return f"{as_int:,}".replace(",", ".")
+        return str(as_int)
+    return _fmt_es_decimal(value, 1)
+
+
+def _format_display_value(value: float, unit: str = "") -> str:
+    normalized = unit.strip().casefold()
+    if normalized in {"%", "p.p.", "pp"} or normalized.endswith("%") or "porcent" in normalized:
+        return f"{_fmt_es_decimal(value, 1)}%"
+    return _format_number(value)
+
+
+def _fmt_es_decimal(value: float, decimals: int) -> str:
+    return f"{value:.{decimals}f}".replace(".", ",")
+
+
+def _capitalize_headline(text: str) -> str:
+    stripped = text.strip()
+    if not stripped:
+        return stripped
+    return stripped[0].upper() + stripped[1:]
+
+
+def _format_corte(publish_date: date) -> str:
+    return f"Corte: {publish_date.day:02d}/{publish_date.month:02d}/{publish_date.year}"
+
+
+def _frequency_label(frequency: str) -> str:
+    return _FREQUENCY_ES.get(frequency, frequency)
 
 
 def _cell(value: str) -> str:

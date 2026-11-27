@@ -1,4 +1,4 @@
-"""Render JSON/MD/HTML 16:9 con SVG puro (cero red)."""
+"""Render JSON/MD/HTML 16:9 con Apache ECharts offline (cero red)."""
 
 from __future__ import annotations
 
@@ -7,18 +7,23 @@ import re
 from datetime import date
 from pathlib import Path
 
+from tigani_broadcast.official_data_charts.metrics import build_chart_narrative
 from tigani_broadcast.official_data_charts.models import (
     ChartArtifact,
+    ChartNarrative,
     ChartsPackage,
+    EditorialKpi,
+    RegimeBand,
     SeriesData,
     SeriesMetrics,
     SeriesObservation,
 )
 from tigani_broadcast.official_data_charts.render import (
+    build_echarts_option,
+    echarts_asset_path,
     render_artifact_html,
     render_charts_json,
     render_charts_markdown,
-    render_series_svg,
     write_charts_package,
 )
 
@@ -100,20 +105,170 @@ def _verified(
     )
 
 
-def test_verified_html_incluye_svg_fuente_y_sin_cdn() -> None:
+def test_verified_html_incluye_echarts_offline_y_textos_es() -> None:
     html = render_artifact_html(_verified(provisional=True), date(2025, 12, 11))
-    assert "<svg" in html
+    assert '<script src="echarts.min.js">' in html
+    assert 'id="chart"' in html
+    assert "echarts.init" in html
+    assert "animationDuration" in html
     assert "Fuente: INDEC — IPC" in html
     assert "145.3_INGNACNAL_DICI_M_38" in html
-    assert "2025-01-01" in html and "2025-02-01" in html
     assert "Datos provisorios" in html
-    assert "*" in html
-    assert "aspect-ratio: 16 / 9" in html or "aspect-ratio: 16 / 9" in html
-    assert not re.search(r"<(script|link)[^>]+https?://", html, flags=re.I)
-    assert "<script" not in html.lower()
+    assert "min-width: 960px" in html
+    assert "min-height: 540px" in html
+    assert "max-width: 1920px" not in html
+    assert "max-height: 1080px" not in html
+    assert "min-height: 280px" not in html
+    assert "requestAnimationFrame" in html
+    assert "clientWidth / 1280" in html
+    assert "ResizeObserver" in html
+    assert "Índice de inflación" in html
+    assert "Corte: 11/12/2025" in html
+    assert "Mensual" in html
+    assert "publish_date 2025-12-11" not in html
+    assert "Ene 25" in html
+    assert "Feb 25" in html
+    assert not re.search(r"https?://cdn\.|jsdelivr|unpkg|cdnjs", html, flags=re.I)
+    assert not re.search(r"<(link)[^>]+https?://", html, flags=re.I)
+    assert 'class="side"' in html
+    assert 'class="badge' not in html
+    assert 'class="kpi-bar"' not in html
 
 
-def test_svg_sin_puntos_validos() -> None:
+def test_echarts_option_labels_y_markpoint() -> None:
+    short = [
+        SeriesObservation(obs_date=date(2025, 1, 1), value=2.0),
+        SeriesObservation(obs_date=date(2025, 2, 1), value=2.8),
+    ]
+    option_short = build_echarts_option(
+        short,
+        _metrics(start=date(2025, 1, 1), end=date(2025, 2, 1), first=2.0, latest=2.8),
+        unit="%",
+    )
+    assert option_short["animation"] is True
+    assert option_short["animationDuration"] == 750
+    assert option_short["series"][0]["smooth"] == 0.2
+    assert option_short["series"][0]["label"]["show"] is True
+    assert option_short["grid"]["containLabel"] is True
+    assert option_short["grid"]["top"] == 44
+    assert option_short["yAxis"]["min"] < 2.0
+    assert option_short["yAxis"]["max"] > 2.8
+    assert option_short["xAxis"]["axisLabel"]["show"] is True
+    assert option_short["xAxis"]["axisLabel"]["interval"] == 0
+    assert "markPoint" not in option_short["series"][0]
+    assert "Ene 25" in option_short["xAxis"]["data"]
+    assert "Feb 25" in option_short["xAxis"]["data"]
+
+    long_obs = [
+        SeriesObservation(obs_date=date(2024, month, 1), value=1.0 + month * 0.1)
+        for month in range(1, 13)
+    ] + [
+        SeriesObservation(obs_date=date(2025, 1, 1), value=3.7),
+        SeriesObservation(obs_date=date(2025, 2, 1), value=2.8),
+        SeriesObservation(obs_date=date(2025, 3, 1), value=2.2),
+    ]
+    values = [o.value for o in long_obs if o.value is not None]
+    metrics = _metrics(
+        start=date(2024, 1, 1),
+        end=date(2025, 3, 1),
+        first=float(values[0]),
+        latest=float(values[-1]),
+    ).model_copy(
+        update={
+            "min_value": float(min(values)),  # type: ignore[arg-type]
+            "max_value": float(max(values)),  # type: ignore[arg-type]
+        }
+    )
+    option_long = build_echarts_option(long_obs, metrics, unit="%")
+    assert option_long["series"][0]["label"]["show"] is False
+    assert "markPoint" in option_long["series"][0]
+    assert "Ene 24" in option_long["xAxis"]["data"]
+    assert "Mar 25" in option_long["xAxis"]["data"]
+
+
+def _narrative_artifact() -> ChartArtifact:
+    observations = [
+        SeriesObservation(obs_date=date(2022, 6, 1), value=5.0),
+        SeriesObservation(obs_date=date(2023, 6, 1), value=7.0),
+        SeriesObservation(obs_date=date(2024, 6, 1), value=4.0),
+        SeriesObservation(obs_date=date(2025, 5, 1), value=2.5),
+    ]
+    narrative = build_chart_narrative(
+        observations,
+        unit="%",
+        frequency="monthly",
+        mode="term_comparison",
+        publish_date=date(2025, 6, 1),
+        scope="argentina",
+        is_monthly_pct_change=True,
+    )
+    base = _verified(observations=observations)
+    return base.model_copy(update={"narrative": narrative})
+
+
+def test_verified_html_con_narrativa_badge_markarea_y_kpis() -> None:
+    artifact = _narrative_artifact()
+    assert artifact.narrative is not None
+    html = render_artifact_html(artifact, date(2025, 6, 1))
+    assert artifact.narrative.headline_badge is not None
+    assert artifact.narrative.headline_badge in html
+    assert 'class="badge' in html
+    assert "markArea" in html
+    assert "Fernández" in html or "Milei" in html
+    assert "kpi-bar" in html
+    assert "kpi-card" in html
+    assert any(kpi.label in html for kpi in artifact.narrative.kpis)
+    assert "Índice de inflación" in html
+    assert "Corte: 01/06/2025" in html
+    assert "min-width: 960px" in html
+    assert "min-height: 540px" in html
+    assert "max-width: 1920px" not in html
+    assert "max-height: 1080px" not in html
+    assert '<script src="echarts.min.js">' in html
+    assert not re.search(r"https?://cdn\.|jsdelivr|unpkg", html, flags=re.I)
+
+
+def test_narrativa_escapa_html_en_badge_bandas_y_kpis() -> None:
+    narrative = ChartNarrative(
+        mode="trend_with_callout",
+        headline_badge="▲ +0,3 p.p. <script>alert(1)</script>",
+        delta_direction="up",
+        anchor_date="2025-02-01",
+        anchor_label="feb<script>x</script>",
+        kpis=[
+            EditorialKpi(
+                label="YTD <b>mal</b>",
+                formatted_value="+1,2 % & más",
+                detail="2025-01-01→2025-02-01",
+            )
+        ],
+        regime_bands=[
+            RegimeBand(
+                label="Fernández <img src=x>",
+                start_date=date(2025, 1, 1),
+                end_date=date(2025, 1, 15),
+            ),
+            RegimeBand(
+                label="Milei (2023–act.)",
+                start_date=date(2025, 1, 16),
+                end_date=date(2025, 2, 1),
+            ),
+        ],
+    )
+    artifact = _verified().model_copy(update={"narrative": narrative})
+    html_doc = render_artifact_html(artifact, date(2025, 12, 11))
+    assert "<script>alert(1)</script>" not in html_doc
+    assert "&lt;script&gt;alert(1)&lt;/script&gt;" in html_doc
+    assert "<b>mal</b>" not in html_doc
+    assert "&lt;b&gt;mal&lt;/b&gt;" in html_doc
+    assert "&amp; más" in html_doc
+    assert "<img src=x>" not in html_doc
+    assert "&lt;img src=x&gt;" in html_doc
+    # El JSON embebido no debe romper el script con </.
+    assert "<\\/" in html_doc or "</script>" in html_doc
+
+
+def test_echarts_option_sin_puntos_validos() -> None:
     metrics = SeriesMetrics(
         observation_count=1,
         valid_count=1,
@@ -130,52 +285,11 @@ def test_svg_sin_puntos_validos() -> None:
         has_provisional_flags=False,
         flags_present=[],
     )
-    svg = render_series_svg(
+    option = build_echarts_option(
         [SeriesObservation(obs_date=date(2025, 1, 1), value=None)],
         metrics,
     )
-    assert "sin datos" in svg
-
-
-def test_svg_un_solo_punto_y_serie_constante() -> None:
-    one = [
-        SeriesObservation(obs_date=date(2025, 3, 1), value=10.0),
-    ]
-    metrics_one = SeriesMetrics(
-        observation_count=1,
-        valid_count=1,
-        start_date=date(2025, 3, 1),
-        end_date=date(2025, 3, 1),
-        first_value=10.0,
-        latest_value=10.0,
-        min_value=10.0,
-        min_date=date(2025, 3, 1),
-        max_value=10.0,
-        max_date=date(2025, 3, 1),
-        absolute_change=None,
-        percent_change=None,
-        has_provisional_flags=False,
-        flags_present=[],
-    )
-    svg_one = render_series_svg(one, metrics_one)
-    assert "<circle" in svg_one
-    assert "NaN" not in svg_one
-
-    constant = [
-        SeriesObservation(obs_date=date(2025, 1, 1), value=5.0),
-        SeriesObservation(obs_date=date(2025, 2, 1), value=5.0),
-        SeriesObservation(obs_date=date(2025, 3, 1), value=None),
-        SeriesObservation(obs_date=date(2025, 4, 1), value=5.0),
-    ]
-    metrics_c = _metrics(
-        start=date(2025, 1, 1),
-        end=date(2025, 4, 1),
-        first=5.0,
-        latest=5.0,
-    )
-    svg_c = render_series_svg(constant, metrics_c)
-    assert "NaN" not in svg_c
-    assert "<polyline" in svg_c
+    assert option["title"]["text"] == "Sin datos"
 
 
 def test_quoted_and_fetch_error_escape_html() -> None:
@@ -194,6 +308,7 @@ def test_quoted_and_fetch_error_escape_html() -> None:
     assert "<script>netas</script>" not in html_q
     assert "&lt;script&gt;" in html_q
     assert "&amp; más" in html_q
+    assert "echarts.min.js" not in html_q
 
     err = ChartArtifact(
         chapter_index=0,
@@ -238,7 +353,8 @@ def test_render_json_y_markdown() -> None:
     assert "índice de inflación" in md
 
 
-def test_write_charts_package_pobla_html_path(tmp_path: Path) -> None:
+def test_write_charts_package_copia_echarts_min_js(tmp_path: Path) -> None:
+    assert echarts_asset_path().is_file()
     package = ChartsPackage(
         publish_date=date(2025, 12, 11),
         items=[
@@ -260,6 +376,9 @@ def test_write_charts_package_pobla_html_path(tmp_path: Path) -> None:
     result = write_charts_package(package, out_json, charts_dir, md)
     assert out_json.is_file()
     assert md.is_file()
+    assert (charts_dir / "echarts.min.js").is_file()
+    assert (charts_dir / "echarts.min.js").stat().st_size > 100_000
     assert len(list(charts_dir.glob("*.html"))) == 2
     assert all(item.html_path is not None for item in result.items)
-    assert "ch00_cue001_00.html" in (result.items[0].html_path or "")
+    verified = Path(result.items[0].html_path or "").read_text(encoding="utf-8")
+    assert '<script src="echarts.min.js">' in verified
