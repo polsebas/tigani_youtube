@@ -66,6 +66,14 @@ def build_parser() -> argparse.ArgumentParser:
         help="Saltea etapas 1–3 si sus salidas ya existen y validan (package siempre se regenera)",
     )
     run.add_argument(
+        "--rerender-only",
+        action="store_true",
+        help=(
+            "Regenera HTML y el paquete desde work/chapters.json, charts.json y assets.json "
+            "sin LLM ni descargas"
+        ),
+    )
+    run.add_argument(
         "--no-llm-visuals",
         action="store_true",
         help="Pasa --no-llm al visual-assets-fetcher",
@@ -118,6 +126,7 @@ def run_cli(
             output_dir=Path(args.output_dir),
             video_url=args.video_url,
             resume=bool(args.resume),
+            rerender_only=bool(args.rerender_only),
             no_llm_visuals=bool(args.no_llm_visuals),
             portrait_layout=args.portrait_layout,
             include_chapter_covers=not bool(args.no_chapter_covers),
@@ -131,7 +140,10 @@ def run_cli(
     report = run_pipeline(
         config,
         runners=runners,
-        on_stage_complete=_print_stage_line,
+        on_stage_complete=lambda result: _print_stage_line(
+            result,
+            rerender_only=bool(config.rerender_only),
+        ),
     )
     report_path = Path(config.output_dir) / "pipeline_report.json"
 
@@ -167,10 +179,11 @@ def _parse_publish_date(raw: str) -> date:
         raise PipelineCliError(f"publish-date inválida: {raw!r}. Usá YYYY-MM-DD.") from exc
 
 
-def _print_stage_line(result: StageResult) -> None:
+def _print_stage_line(result: StageResult, *, rerender_only: bool = False) -> None:
     index = _STAGE_INDEX.get(result.stage, 0)
     if result.status == "skipped":
-        print(f"[{index}/4] {result.stage}: skipped (resume)")
+        reason = "rerender-only" if rerender_only else "resume"
+        print(f"[{index}/4] {result.stage}: skipped ({reason})")
         return
     if result.status == "failed":
         print(

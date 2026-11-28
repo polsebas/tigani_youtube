@@ -60,6 +60,7 @@ from tigani_broadcast.visual_assets_fetcher.render import (
     render_assets_json,
     render_assets_markdown,
     render_visual_artifact_html,
+    rerender_visuals_package,
     write_visual_assets_package,
 )
 
@@ -107,6 +108,7 @@ __all__ = [
     "render_assets_json",
     "render_assets_markdown",
     "render_visual_artifact_html",
+    "rerender_visuals_package",
     "resolve_chapters_to_visual_assets",
     "run_cli",
     "write_visual_assets_package",

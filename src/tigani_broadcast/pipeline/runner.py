@@ -16,6 +16,7 @@ from pydantic import ValidationError
 from tigani_broadcast.broadcast_package_builder.cli import run_cli as run_package_cli
 from tigani_broadcast.official_data_charts.cli import run_cli as run_charts_cli
 from tigani_broadcast.official_data_charts.models import ChartsPackage
+from tigani_broadcast.official_data_charts.render import rerender_charts_package
 from tigani_broadcast.pipeline.models import (
     PipelineConfig,
     PipelineReport,
@@ -26,6 +27,7 @@ from tigani_broadcast.transcript_chapterizer.cli import main as run_chapterizer_
 from tigani_broadcast.transcript_chapterizer.models import ChapterizedTranscript
 from tigani_broadcast.visual_assets_fetcher.cli import run_cli as run_visuals_cli
 from tigani_broadcast.visual_assets_fetcher.models import VisualAssetsPackage
+from tigani_broadcast.visual_assets_fetcher.render import rerender_visuals_package
 
 StageRunner = Callable[[list[str]], int]
 
@@ -70,6 +72,29 @@ def run_pipeline(
     started = clock_fn()
     succeeded = True
 
+    if config.rerender_only:
+        missing = _missing_rerender_inputs(paths)
+        if missing:
+            message = _rerender_missing_message(missing)
+            result = StageResult(
+                stage=missing[0][0],
+                status="failed",
+                duration_seconds=0.0,
+                error_message=message,
+            )
+            stage_results.append(result)
+            if on_stage_complete is not None:
+                on_stage_complete(result)
+            report = _build_report(
+                config,
+                stages=stage_results,
+                succeeded=False,
+                total_duration_seconds=_elapsed(started, clock_fn),
+                package_dir=package_dir,
+            )
+            _write_report(output_dir / "pipeline_report.json", report)
+            return report
+
     plan: list[tuple[StageName, StageRunner, list[str], Path | None, Callable[[], bool]]] = [
         (
             "chapterizer",
@@ -103,6 +128,50 @@ def run_pipeline(
 
     for stage, runner, argv, output_path, can_skip in plan:
         stage_started = clock_fn()
+        if config.rerender_only and stage == "chapterizer":
+            result = StageResult(
+                stage=stage,
+                status="skipped",
+                duration_seconds=_elapsed(stage_started, clock_fn),
+                output_path=str(output_path) if output_path is not None else None,
+            )
+            stage_results.append(result)
+            if on_stage_complete is not None:
+                on_stage_complete(result)
+            continue
+        if config.rerender_only and stage in {"charts", "visuals"}:
+            if stage == "charts":
+                code, error_message = _invoke_direct(
+                    lambda: rerender_charts_package(paths.charts_json, paths.charts_dir)
+                )
+            else:
+                code, error_message = _invoke_direct(
+                    lambda: rerender_visuals_package(paths.assets_json)
+                )
+            duration = _elapsed(stage_started, clock_fn)
+            if code != 0:
+                result = StageResult(
+                    stage=stage,
+                    status="failed",
+                    duration_seconds=duration,
+                    output_path=str(output_path) if output_path is not None else None,
+                    error_message=error_message or f"etapa {stage} salió con código {code}",
+                )
+                stage_results.append(result)
+                if on_stage_complete is not None:
+                    on_stage_complete(result)
+                succeeded = False
+                break
+            result = StageResult(
+                stage=stage,
+                status="executed",
+                duration_seconds=duration,
+                output_path=str(output_path) if output_path is not None else None,
+            )
+            stage_results.append(result)
+            if on_stage_complete is not None:
+                on_stage_complete(result)
+            continue
         if config.resume and can_skip():
             result = StageResult(
                 stage=stage,
@@ -150,6 +219,37 @@ def run_pipeline(
     )
     _write_report(output_dir / "pipeline_report.json", report)
     return report
+
+
+def _invoke_direct(action: Callable[[], object]) -> tuple[int, str | None]:
+    try:
+        action()
+    except Exception as exc:  # noqa: BLE001 — fail-fast con mensaje auditable
+        detail = str(exc).strip() or exc.__class__.__name__
+        return 1, detail
+    return 0, None
+
+
+def _missing_rerender_inputs(
+    paths: _WorkspacePaths,
+) -> list[tuple[StageName, Path]]:
+    required: list[tuple[StageName, Path]] = [
+        ("chapterizer", paths.chapters_json),
+        ("charts", paths.charts_json),
+        ("visuals", paths.assets_json),
+    ]
+    return [(stage, path) for stage, path in required if not path.is_file()]
+
+
+def _rerender_missing_message(missing: Sequence[tuple[StageName, Path]]) -> str:
+    details = [
+        f"{path.name} (corré primero la etapa {stage} sin --rerender-only)"
+        for stage, path in missing
+    ]
+    if len(details) == 1:
+        return f"falta {details[0]}."
+    joined = "; ".join(details)
+    return f"faltan archivos para --rerender-only: {joined}."
 
 
 def _as_list_runner(run_cli: Callable[..., int]) -> StageRunner:

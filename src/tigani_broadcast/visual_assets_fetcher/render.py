@@ -99,6 +99,22 @@ def render_visual_artifact_html(
     )
 
 
+def rerender_visuals_package(assets_json_path: Path) -> VisualAssetsPackage:
+    """Regenera placas HTML y `assets.md` desde un `assets.json` local, sin bajar imágenes."""
+    path = Path(assets_json_path)
+    if not path.is_file():
+        raise FileNotFoundError(
+            f"no existe assets.json: {path}. Corré primero la etapa visuals sin --rerender-only."
+        )
+    package = VisualAssetsPackage.model_validate_json(path.read_text(encoding="utf-8"))
+    return write_visual_assets_package(
+        package,
+        output_json=path,
+        assets_dir=path.parent / "assets",
+        markdown_path=path.with_suffix(".md"),
+    )
+
+
 def write_visual_assets_package(
     package: VisualAssetsPackage,
     output_json: Path,

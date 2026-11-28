@@ -30,6 +30,8 @@ def _argv(tmp_path: Path, *, transcript: Path | None = None, **flags: object) ->
         argv.extend(["--video-url", str(flags["video_url"])])
     if flags.get("resume"):
         argv.append("--resume")
+    if flags.get("rerender_only"):
+        argv.append("--rerender-only")
     if flags.get("no_llm_visuals"):
         argv.append("--no-llm-visuals")
     if flags.get("portrait_layout"):
@@ -111,6 +113,28 @@ def test_run_cli_resume_imprime_skipped(tmp_path: Path, capsys) -> None:
     assert "[2/4] charts: skipped (resume)" in out
     assert "[3/4] visuals: skipped (resume)" in out
     assert "[4/4] package: executed" in out
+
+
+def test_run_cli_rerender_only_imprime_skip_y_regenera(tmp_path: Path, capsys) -> None:
+    from .test_runner import _write_chapters, _write_charts, _write_visuals
+
+    output_dir = tmp_path / "run"
+    work = output_dir / "work"
+    _write_chapters(work)
+    _write_charts(work)
+    _write_visuals(work)
+
+    code = run_cli(
+        _argv(tmp_path, rerender_only=True, portrait_layout="contain", no_chapter_covers=True)
+    )
+    out = capsys.readouterr().out
+
+    assert code == EXIT_OK
+    assert "[1/4] chapterizer: skipped (rerender-only)" in out
+    assert "[2/4] charts: executed" in out
+    assert "[3/4] visuals: executed" in out
+    assert "[4/4] package: executed" in out
+    assert (output_dir / "package" / "deck.html").is_file()
 
 
 def test_run_cli_falla_etapa_exit_1(tmp_path: Path, capsys) -> None:

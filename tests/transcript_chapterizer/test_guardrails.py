@@ -207,14 +207,21 @@ def test_rechaza_si_la_cifra_esta_en_las_dos_cues_adyacentes() -> None:
     assert run.content.hard_data[0].cue_index == 1
 
 
-def test_rechaza_raw_value_text_sin_cifra() -> None:
-    cues = _cues("sin números")
-    run = _draft("sin números", mentions=[_hard(0, "la mitad")])
+def test_descarta_raw_value_text_sin_digito() -> None:
+    cues = _cues("cinco clases más", "la tasa fue 34,5%")
+    run = _draft(
+        *[cue.text for cue in cues],
+        mentions=[
+            _hard(0, "cinco clases más", "clases del curso"),
+            _hard(1, "34,5%", "tasa"),
+        ],
+    )
     guard = CueGroundingGuardrail()
     guard.bind(cues)
 
-    with pytest.raises(OutputCheckError, match="no contiene una cifra verificable"):
-        guard.check(run)  # type: ignore[arg-type]
+    guard.check(run)  # type: ignore[arg-type]
+
+    assert [mention.raw_value_text for mention in run.content.hard_data] == ["34,5%"]
 
 
 def test_rechaza_anio_en_indicator_label_sin_time_reference() -> None:

@@ -23,6 +23,7 @@ class PipelineConfig(BaseModel):
     output_dir: Path
     video_url: str | None = None
     resume: bool = False
+    rerender_only: bool = False
     no_llm_visuals: bool = False
     portrait_layout: PortraitLayout = "sidebar"
     include_chapter_covers: bool = True

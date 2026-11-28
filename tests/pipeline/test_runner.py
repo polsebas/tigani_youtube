@@ -226,6 +226,84 @@ def _write_package(package_dir: Path) -> None:
     (package_dir / "package.json").write_text("{}\n", encoding="utf-8")
 
 
+def test_rerender_only_regenera_html_y_deck_sin_llm(tmp_path: Path, monkeypatch) -> None:
+    def _prohibido(*_args: object, **_kwargs: object) -> None:
+        raise AssertionError("rerender-only no debe instanciar LLM ni providers HTTP")
+
+    monkeypatch.setattr(
+        "tigani_broadcast.official_data_charts.cli.AgnoMentionResolver",
+        _prohibido,
+    )
+    monkeypatch.setattr(
+        "tigani_broadcast.official_data_charts.cli.build_default_series_fetcher",
+        _prohibido,
+    )
+    monkeypatch.setattr(
+        "tigani_broadcast.official_data_charts.cli.build_agno_model_from_env",
+        _prohibido,
+    )
+    monkeypatch.setattr(
+        "tigani_broadcast.visual_assets_fetcher.cli.build_default_visual_fetcher",
+        _prohibido,
+    )
+    monkeypatch.setattr(
+        "tigani_broadcast.visual_assets_fetcher.cli.build_agno_model_from_env",
+        _prohibido,
+    )
+    monkeypatch.setattr(
+        "tigani_broadcast.transcript_chapterizer.cli.build_agno_model_from_env",
+        _prohibido,
+    )
+
+    config = _config(tmp_path, rerender_only=True)
+    work = Path(config.output_dir) / "work"
+    _write_chapters(work)
+    _write_charts(work)
+    _write_visuals(work)
+    (work / "charts" / "ch00_cue000_00.html").unlink()
+    (work / "assets" / "ch00_cue000_00.html").unlink()
+
+    report = run_pipeline(config)
+
+    assert report.succeeded is True
+    assert [(stage.stage, stage.status) for stage in report.stages] == [
+        ("chapterizer", "skipped"),
+        ("charts", "executed"),
+        ("visuals", "executed"),
+        ("package", "executed"),
+    ]
+    assert report.stages[1].duration_seconds < 1
+    assert report.stages[2].duration_seconds < 1
+    chart_html = (work / "charts" / "ch00_cue000_00.html").read_text(encoding="utf-8")
+    assert "echarts.init" in chart_html
+    assert (work / "charts" / "echarts.min.js").is_file()
+    visual_html = (work / "assets" / "ch00_cue000_00.html").read_text(encoding="utf-8")
+    assert "min-width: 960px" in visual_html
+    deck = Path(config.output_dir) / "package" / "deck.html"
+    assert deck.is_file()
+    assert 'id="stage"' in deck.read_text(encoding="utf-8")
+    assert report.deck_html_path == str(deck)
+
+
+def test_rerender_only_falla_si_falta_charts_json(tmp_path: Path) -> None:
+    config = _config(tmp_path, rerender_only=True)
+    work = Path(config.output_dir) / "work"
+    _write_chapters(work)
+    _write_visuals(work)
+    recorder = _RecordingRunners()
+
+    report = run_pipeline(config, runners=recorder.as_stage_runners(Path(config.output_dir)))
+
+    assert report.succeeded is False
+    assert recorder.order == []
+    assert report.stages[0].stage == "charts"
+    assert report.stages[0].status == "failed"
+    message = report.stages[0].error_message or ""
+    assert "charts.json" in message
+    assert "etapa charts" in message
+    assert "sin --rerender-only" in message
+
+
 def test_run_pipeline_completa_propaga_flags(tmp_path: Path) -> None:
     config = _config(tmp_path)
     recorder = _RecordingRunners()

@@ -95,6 +95,10 @@ class CueGroundingGuardrail(_OutputGuardrail):
         updated: list[DraftHardDataMention] = []
         changed = False
         for mention in mentions:
+            # "cinco clases más" no trae dígito: se descarta. No se traduce la palabra.
+            if not normalized_numbers(mention.raw_value_text):
+                changed = True
+                continue
             anchored = self._anchor(mention)
             updated.append(anchored)
             changed = changed or anchored is not mention

@@ -70,6 +70,7 @@ EXTRACTOR_INSTRUCTIONS = "\n".join(
         ),
         "No copies timestamps.",
         "Copiá literalmente lo dicho en raw_value_text.",
+        "La cifra va en dígitos (45, 2.5%, 30,000), nunca en palabras: «cinco clases» no vale.",
         "indicator_label nombra la magnitud, sin el año.",
         "Si hay time_reference, es una expresión dicha en la cue. Si no hay, dejala en null.",
         "Incluí visual_subjects cuando haya actores, organismos o conceptos clave.",
