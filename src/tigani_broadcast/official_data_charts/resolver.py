@@ -47,6 +47,8 @@ from tigani_broadcast.official_data_charts.models import (
 from tigani_broadcast.official_data_charts.playbook import (
     PLAYBOOK_CATALOG,
     build_dual_base100,
+    build_dual_spread,
+    build_trade_balance,
     match_playbook_fallback,
 )
 from tigani_broadcast.official_data_charts.providers.base import ProviderError
@@ -141,14 +143,22 @@ class _PlaybookSelectionPayload(BaseModel):
 
 _PLAYBOOK_INSTRUCTIONS = "\n".join(
     (
-        "Elegí hasta 2 gráficos del Playbook v1 que iluminen la tesis del capítulo.",
+        "Elegí hasta 2 gráficos del Playbook v2 que iluminen la tesis del capítulo.",
         "Devolvé items con playbook_id exacto, cue_index de la mención más afín y rationale.",
-        "playbook_id solo puede ser: ipc_trend, ipc_vs_dolar_base100,",
-        "reservas_bcra_regimes, emae_activity, riesgo_pais_trend.",
+        "playbook_id solo puede ser: " + ", ".join(PLAYBOOK_CATALOG) + ".",
         "No calcules cifras. Si ningún gráfico aporta, devolvé items=[].",
-        "ipc_vs_dolar_base100 puede convivir con un IPC mensual ya citado.",
+        "Pueden convivir con un IPC mensual ya citado: ipc_vs_dolar_base100,",
+        "salarios_vs_ipc_base100 y canasta_basica_vs_ipc_base100.",
         "No repitas ipc_trend si el IPC mensual ya está resuelto en el capítulo.",
+        "No repitas un playbook_id que ya se haya usado en otro capítulo del video.",
     )
+)
+_IPC_COMPOSITE_PLAYBOOKS = frozenset(
+    {
+        "ipc_vs_dolar_base100",
+        "salarios_vs_ipc_base100",
+        "canasta_basica_vs_ipc_base100",
+    }
 )
 
 
@@ -852,7 +862,7 @@ def _playbook_allowed(
     prior = prior_series_keys or set()
     if playbook_id == "ipc_trend" and spec.series_keys[0] in prior:
         return False
-    if playbook_id == "ipc_vs_dolar_base100":
+    if playbook_id in _IPC_COMPOSITE_PLAYBOOKS:
         return True
     if spec.chart_type in {"single_line", "bar_diverging"}:
         return spec.series_keys[0] not in existing_series_keys
@@ -929,6 +939,10 @@ _PLAYBOOK_AFFINITY: dict[PlaybookId, tuple[str, ...]] = {
     "riesgo_pais_trend": ("riesgo", "embi", "bono", "tasa", "deuda", "vencimiento"),
     "emae_activity": ("emae", "actividad", "recesion", "pbi"),
     "ipc_trend": ("inflacion", "ipc"),
+    "brecha_cambiaria": ("brecha", "cepo", "blue", "paralelo", "mep", "ccl"),
+    "salarios_vs_ipc_base100": ("salario", "sueldo", "adquisitivo", "paritaria", "ingreso"),
+    "canasta_basica_vs_ipc_base100": ("canasta", "pobreza", "indigencia", "cbt", "cba"),
+    "balanza_comercial_ica": ("balanza", "exportacion", "importacion", "ica"),
 }
 
 
@@ -972,11 +986,32 @@ def _build_playbook_artifact(
 ) -> ChartArtifact | None:
     spec = PLAYBOOK_CATALOG[playbook_id]
     try:
-        if playbook_id == "ipc_vs_dolar_base100":
-            return _build_dual_playbook_artifact(
+        if spec.chart_type == "dual_base100":
+            return _build_dual_base100_playbook_artifact(
                 chapter_index,
                 cue_index,
                 timestamp,
+                playbook_id,
+                rationale,
+                publish_date=publish_date,
+                fetcher=fetcher,
+            )
+        if spec.chart_type == "dual_spread":
+            return _build_spread_playbook_artifact(
+                chapter_index,
+                cue_index,
+                timestamp,
+                playbook_id,
+                rationale,
+                publish_date=publish_date,
+                fetcher=fetcher,
+            )
+        if spec.chart_type == "trade_balance":
+            return _build_trade_playbook_artifact(
+                chapter_index,
+                cue_index,
+                timestamp,
+                playbook_id,
                 rationale,
                 publish_date=publish_date,
                 fetcher=fetcher,
@@ -1021,60 +1056,216 @@ def _build_playbook_artifact(
         return None
 
 
-def _build_dual_playbook_artifact(
+def _build_dual_base100_playbook_artifact(
     chapter_index: int,
     cue_index: int,
     timestamp: str,
+    playbook_id: PlaybookId,
     rationale: str,
     *,
     publish_date: date,
     fetcher: SeriesFetcher,
 ) -> ChartArtifact:
-    spec = PLAYBOOK_CATALOG["ipc_vs_dolar_base100"]
-    ipc_entry = get_catalog_entry(spec.series_keys[0])
-    fx_entry = get_catalog_entry(spec.series_keys[1])
+    spec = PLAYBOOK_CATALOG[playbook_id]
+    primary_entry = get_catalog_entry(spec.series_keys[0])
+    secondary_entry = get_catalog_entry(spec.series_keys[1])
     start = _fetch_start(publish_date, spec.fetch_window_months)
-    ipc_series = fetcher.fetch(ipc_entry, start, publish_date)
-    fx_series = fetcher.fetch(fx_entry, start, publish_date)
-    ipc_index, fx_index, narrative = build_dual_base100(
-        _series_points(ipc_series),
-        _series_points(fx_series),
+    primary_series = fetcher.fetch(primary_entry, start, publish_date)
+    secondary_series = fetcher.fetch(secondary_entry, start, publish_date)
+    if playbook_id == "ipc_vs_dolar_base100":
+        call = {
+            "primary_mode": "percent_change",
+            "secondary_mode": "level",
+            "primary_label": "IPC acumulado",
+            "secondary_label": "Dólar oficial",
+            "primary_subject": "IPC",
+            "secondary_subject": "dólar",
+            "secondary_name": "Dólar mayorista",
+        }
+    else:
+        call = {
+            "primary_mode": "level",
+            "secondary_mode": "percent_change",
+            "primary_label": spec.title.split(" vs.")[0],
+            "secondary_label": "IPC",
+            "primary_subject": spec.title.split(" vs.")[0].casefold(),
+            "secondary_subject": "IPC",
+            "secondary_name": "IPC",
+        }
+    primary_index, secondary_index, narrative = build_dual_base100(
+        _series_points(primary_series),
+        _series_points(secondary_series),
+        publish_date=publish_date,
+        max_months=spec.default_window_months,
+        primary_mode=call["primary_mode"],  # type: ignore[arg-type]
+        secondary_mode=call["secondary_mode"],  # type: ignore[arg-type]
+        primary_label=str(call["primary_label"]),
+        secondary_label=str(call["secondary_label"]),
+        primary_subject=str(call["primary_subject"]),
+        secondary_subject=str(call["secondary_subject"]),
+    )
+    return _indexed_playbook_artifact(
+        chapter_index,
+        cue_index,
+        timestamp,
+        playbook_id,
+        rationale,
+        spec_title=spec.title,
+        editorial_note=spec.editorial_note,
+        chart_type="dual_base100",
+        base_series=primary_series,
+        indexed_points=primary_index,
+        secondary_points=secondary_index,
+        secondary_series=secondary_series,
+        secondary_label=str(call["secondary_name"]),
+        narrative=narrative,
+        unit="base 100",
+    )
+
+
+def _build_spread_playbook_artifact(
+    chapter_index: int,
+    cue_index: int,
+    timestamp: str,
+    playbook_id: PlaybookId,
+    rationale: str,
+    *,
+    publish_date: date,
+    fetcher: SeriesFetcher,
+) -> ChartArtifact:
+    spec = PLAYBOOK_CATALOG[playbook_id]
+    official = fetcher.fetch(
+        get_catalog_entry(spec.series_keys[0]),
+        _fetch_start(publish_date, spec.fetch_window_months),
+        publish_date,
+    )
+    parallel = fetcher.fetch(
+        get_catalog_entry(spec.series_keys[1]),
+        _fetch_start(publish_date, spec.fetch_window_months),
+        publish_date,
+    )
+    official_points, parallel_points, narrative = build_dual_spread(
+        _series_points(official),
+        _series_points(parallel),
         publish_date=publish_date,
         max_months=spec.default_window_months,
     )
-    indexed = ipc_series.model_copy(
+    return _indexed_playbook_artifact(
+        chapter_index,
+        cue_index,
+        timestamp,
+        playbook_id,
+        rationale,
+        spec_title=spec.title,
+        editorial_note=spec.editorial_note,
+        chart_type="dual_spread",
+        base_series=official,
+        indexed_points=official_points,
+        secondary_points=parallel_points,
+        secondary_series=parallel,
+        secondary_label="Dólar blue",
+        narrative=narrative,
+        unit=official.unit,
+    )
+
+
+def _build_trade_playbook_artifact(
+    chapter_index: int,
+    cue_index: int,
+    timestamp: str,
+    playbook_id: PlaybookId,
+    rationale: str,
+    *,
+    publish_date: date,
+    fetcher: SeriesFetcher,
+) -> ChartArtifact:
+    spec = PLAYBOOK_CATALOG[playbook_id]
+    exports = fetcher.fetch(
+        get_catalog_entry(spec.series_keys[0]),
+        _fetch_start(publish_date, spec.fetch_window_months),
+        publish_date,
+    )
+    imports = fetcher.fetch(
+        get_catalog_entry(spec.series_keys[1]),
+        _fetch_start(publish_date, spec.fetch_window_months),
+        publish_date,
+    )
+    export_points, import_points, narrative = build_trade_balance(
+        _series_points(exports),
+        _series_points(imports),
+        publish_date=publish_date,
+        max_months=spec.default_window_months,
+    )
+    return _indexed_playbook_artifact(
+        chapter_index,
+        cue_index,
+        timestamp,
+        playbook_id,
+        rationale,
+        spec_title=spec.title,
+        editorial_note=spec.editorial_note,
+        chart_type="trade_balance",
+        base_series=exports,
+        indexed_points=export_points,
+        secondary_points=import_points,
+        secondary_series=imports,
+        secondary_label="Importaciones",
+        narrative=narrative,
+        unit=exports.unit,
+    )
+
+
+def _indexed_playbook_artifact(
+    chapter_index: int,
+    cue_index: int,
+    timestamp: str,
+    playbook_id: PlaybookId,
+    rationale: str,
+    *,
+    spec_title: str,
+    editorial_note: str | None,
+    chart_type: str,
+    base_series: SeriesData,
+    indexed_points: Sequence[DataPoint],
+    secondary_points: Sequence[DataPoint],
+    secondary_series: SeriesData,
+    secondary_label: str,
+    narrative: ChartNarrative,
+    unit: str,
+) -> ChartArtifact:
+    series = base_series.model_copy(
         update={
-            "unit": "base 100",
+            "unit": unit,
             "frequency": "monthly",
             "observations": [
-                SeriesObservation(obs_date=point.obs_date, value=point.value) for point in ipc_index
+                SeriesObservation(obs_date=point.obs_date, value=point.value)
+                for point in indexed_points
             ],
         }
     )
-    metrics = compute_series_metrics(indexed.observations)
-    badge = narrative.headline_badge or "Base 100"
+    metrics = compute_series_metrics(series.observations)
     return ChartArtifact(
         chapter_index=chapter_index,
         cue_index=cue_index,
         timestamp=timestamp,
-        indicator_label=spec.title,
-        raw_value_text=badge,
+        indicator_label=spec_title,
+        raw_value_text=narrative.headline_badge or spec_title,
         resolution_status="verified_series",
         rationale=rationale[:240],
-        series=indexed,
+        series=series,
         metrics=metrics,
         narrative=narrative,
-        playbook_id="ipc_vs_dolar_base100",
-        chart_type="dual_base100",
+        playbook_id=playbook_id,
+        chart_type=chart_type,  # type: ignore[arg-type]
         secondary_series=SecondarySeriesData(
-            label="Dólar mayorista",
-            series_key=fx_series.catalog_id,
-            provider=fx_series.provider,
-            series_id=fx_series.series_id,
-            unit="base 100",
-            points=fx_index,
+            label=secondary_label,
+            series_key=secondary_series.catalog_id,
+            provider=secondary_series.provider,
+            series_id=secondary_series.series_id,
+            unit=unit,
+            points=list(secondary_points),
         ),
-        editorial_note=spec.editorial_note,
+        editorial_note=editorial_note,
     )
 
 

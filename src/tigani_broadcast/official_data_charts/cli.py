@@ -14,7 +14,10 @@ from pydantic import ValidationError
 from tigani_broadcast.official_data_charts.cache import DiskSeriesCache
 from tigani_broadcast.official_data_charts.providers.factory import build_default_providers
 from tigani_broadcast.official_data_charts.providers.fetcher import SeriesFetcher
-from tigani_broadcast.official_data_charts.render import write_charts_package
+from tigani_broadcast.official_data_charts.render import (
+    rerender_charts_package,
+    write_charts_package,
+)
 from tigani_broadcast.official_data_charts.resolver import (
     AgnoMentionResolver,
     MentionResolverEngine,
@@ -55,6 +58,19 @@ def run_cli(
     parser = _parser()
     args = parser.parse_args(list(argv) if argv is not None else None)
     try:
+        if args.rerender_only:
+            rerender_charts_package(
+                args.output,
+                charts_dir=args.charts_dir,
+                markdown_path=args.markdown,
+            )
+            return EXIT_OK
+        if args.input is None:
+            raise ChartsCliError("falta --input (chapters.json)")
+        if args.publish_date is None:
+            raise ChartsCliError("falta --publish-date (YYYY-MM-DD)")
+        if args.charts_dir is None:
+            raise ChartsCliError("falta --charts-dir")
         publish_date = _parse_publish_date(args.publish_date)
         chapters = _load_chapters(args.input)
         active_resolver = resolver
@@ -124,26 +140,31 @@ def _parser() -> argparse.ArgumentParser:
         ),
     )
     parser.add_argument(
+        "--rerender-only",
+        action="store_true",
+        help="Regenera HTML/markdown desde charts.json sin LLM ni red",
+    )
+    parser.add_argument(
         "--input",
-        required=True,
         type=Path,
+        default=None,
         help="Ruta a chapters.json (salida de transcript-chapterizer)",
     )
     parser.add_argument(
         "--publish-date",
-        required=True,
+        default=None,
         help="Fecha de publicación del video (YYYY-MM-DD)",
     )
     parser.add_argument(
         "--output",
         required=True,
         type=Path,
-        help="Destino charts.json",
+        help="Destino charts.json (origen si --rerender-only)",
     )
     parser.add_argument(
         "--charts-dir",
-        required=True,
         type=Path,
+        default=None,
         help="Directorio de placas HTML 16:9",
     )
     parser.add_argument(

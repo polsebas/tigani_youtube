@@ -140,6 +140,29 @@ def render_artifact_html(artifact: ChartArtifact, publish_date: date) -> str:
     )
 
 
+def rerender_charts_package(
+    charts_json_path: Path,
+    charts_dir: Path | None = None,
+    *,
+    markdown_path: Path | None = None,
+) -> ChartsPackage:
+    """Regenera placas HTML, `echarts.min.js` y `charts.md` desde un `charts.json` local."""
+    path = Path(charts_json_path)
+    if not path.is_file():
+        raise FileNotFoundError(
+            f"no existe charts.json: {path}. Corré primero la etapa charts sin --rerender-only."
+        )
+    package = ChartsPackage.model_validate_json(path.read_text(encoding="utf-8"))
+    target_dir = Path(charts_dir) if charts_dir is not None else path.parent / "charts"
+    markdown = Path(markdown_path) if markdown_path is not None else path.with_suffix(".md")
+    return write_charts_package(
+        package,
+        output_json=path,
+        charts_dir=target_dir,
+        markdown_path=markdown,
+    )
+
+
 def write_charts_package(
     package: ChartsPackage,
     output_json: Path,
@@ -502,6 +525,10 @@ def build_echarts_option(
     del metrics
     if chart_type == "dual_base100" and secondary_points:
         return _dual_base100_option(observations, secondary_points)
+    if chart_type == "dual_spread" and secondary_points:
+        return _dual_spread_option(observations, secondary_points)
+    if chart_type == "trade_balance" and secondary_points:
+        return _trade_balance_option(observations, secondary_points)
     if chart_type == "bar_diverging":
         return _bar_diverging_option(observations)
     if not points:
@@ -686,6 +713,182 @@ def _dual_base100_option(
             ),
         ],
         "_tiganiUnit": "base 100",
+    }
+
+
+def _align_with_secondary(
+    observations: list[SeriesObservation],
+    secondary_points: Sequence[DataPoint],
+) -> list[tuple[date, float, float]]:
+    secondary_by_date = {point.obs_date: float(point.value) for point in secondary_points}
+    return [
+        (obs.obs_date, float(obs.value), secondary_by_date[obs.obs_date])
+        for obs in observations
+        if obs.value is not None and obs.obs_date in secondary_by_date
+    ]
+
+
+def _empty_chart() -> dict[str, Any]:
+    return {
+        "animation": False,
+        "title": {
+            "text": "Sin datos",
+            "left": "center",
+            "top": "middle",
+            "textStyle": {"color": "#9db0c3", "fontSize": 18},
+        },
+    }
+
+
+def _dual_spread_option(
+    observations: list[SeriesObservation],
+    secondary_points: Sequence[DataPoint],
+) -> dict[str, Any]:
+    aligned = _align_with_secondary(observations, secondary_points)
+    if len(aligned) < 2:
+        return _empty_chart()
+    categories = _category_labels([row[0] for row in aligned])
+    official = [row[1] for row in aligned]
+    parallel = [row[2] for row in aligned]
+    dense = len(aligned) > _DENSE_SYMBOL_MAX
+    y_min, y_max = _y_axis_bounds([*official, *parallel])
+    return {
+        "animation": True,
+        "animationDuration": 750,
+        "animationEasing": "cubicOut",
+        "legend": {"show": True, "top": 0, "textStyle": {"color": "#f4f7fb", "fontSize": 14}},
+        "grid": {"left": 16, "right": 28, "top": 72, "bottom": 34, "containLabel": True},
+        "tooltip": {"trigger": "axis", "show": False},
+        "xAxis": _category_axis(categories, show_all=not dense),
+        "yAxis": _value_axis(y_min, y_max),
+        "series": [
+            _spread_line("Dólar oficial", official, color="#3db8a8", dense=dense, area=False),
+            _spread_line("Dólar blue", parallel, color="#e8b84a", dense=dense, area=True),
+        ],
+        "_tiganiUnit": "ARS por USD",
+    }
+
+
+def _spread_line(
+    name: str,
+    values: list[float],
+    *,
+    color: str,
+    dense: bool,
+    area: bool,
+) -> dict[str, Any]:
+    last = len(values) - 1
+    payload: dict[str, Any] = {
+        "name": name,
+        "type": "line",
+        "smooth": 0.2,
+        "showSymbol": not dense,
+        "symbol": "circle",
+        "symbolSize": 8,
+        "data": values,
+        "lineStyle": {"width": 3, "color": color},
+        "itemStyle": {"color": color},
+    }
+    if area:
+        payload["areaStyle"] = {"color": "rgba(232,184,74,0.18)"}
+    if dense:
+        payload["markPoint"] = {
+            "symbol": "pin",
+            "symbolSize": 48,
+            "data": [
+                {
+                    "name": "Último",
+                    "coord": [last, values[last]],
+                    "value": values[last],
+                    "label": {"show": True, "color": "#f4f7fb", "fontSize": 14, "fontWeight": 700},
+                    "itemStyle": {"color": color},
+                }
+            ],
+        }
+    return payload
+
+
+def _trade_balance_option(
+    observations: list[SeriesObservation],
+    secondary_points: Sequence[DataPoint],
+) -> dict[str, Any]:
+    aligned = _align_with_secondary(observations, secondary_points)
+    if not aligned:
+        return _empty_chart()
+    categories = _category_labels([row[0] for row in aligned])
+    exports = [row[1] for row in aligned]
+    imports = [row[2] for row in aligned]
+    balance = [left - right for left, right in zip(exports, imports, strict=True)]
+    y_min, y_max = _y_axis_bounds([*exports, *imports, *balance])
+    return {
+        "animation": True,
+        "animationDuration": 750,
+        "animationEasing": "cubicOut",
+        "legend": {"show": True, "top": 0, "textStyle": {"color": "#f4f7fb", "fontSize": 14}},
+        "grid": {"left": 16, "right": 28, "top": 72, "bottom": 34, "containLabel": True},
+        "tooltip": {"trigger": "axis", "show": False},
+        "xAxis": _category_axis(categories, show_all=len(aligned) <= _DENSE_LABEL_MAX),
+        "yAxis": _value_axis(y_min, y_max),
+        "series": [
+            {
+                "name": "Exportaciones",
+                "type": "bar",
+                "data": exports,
+                "itemStyle": {"color": "#3db8a8"},
+            },
+            {
+                "name": "Importaciones",
+                "type": "bar",
+                "data": imports,
+                "itemStyle": {"color": "#e57373"},
+            },
+            {
+                "name": "Saldo",
+                "type": "line",
+                "data": balance,
+                "showSymbol": len(aligned) <= _DENSE_SYMBOL_MAX,
+                "lineStyle": {"width": 3, "color": "#e8b84a"},
+                "itemStyle": {"color": "#e8b84a"},
+                "markLine": {
+                    "silent": True,
+                    "symbol": "none",
+                    "lineStyle": {"color": "#c8d6e5", "width": 1.5},
+                    "data": [{"yAxis": 0, "label": {"show": False}}],
+                },
+            },
+        ],
+        "_tiganiUnit": "millones de USD",
+    }
+
+
+def _category_axis(categories: list[str], *, show_all: bool) -> dict[str, Any]:
+    return {
+        "type": "category",
+        "boundaryGap": True,
+        "data": categories,
+        "axisLine": {"lineStyle": {"color": "#2b3b4d"}},
+        "axisTick": {"show": False},
+        "axisLabel": {
+            "show": True,
+            "color": "#c8d6e5",
+            "fontSize": 15,
+            "interval": 0 if show_all else "auto",
+        },
+    }
+
+
+def _value_axis(y_min: float, y_max: float) -> dict[str, Any]:
+    return {
+        "type": "value",
+        "min": y_min,
+        "max": y_max,
+        "axisLine": {"show": False},
+        "axisTick": {"show": False},
+        "axisLabel": {"color": "#c8d6e5", "fontSize": 14, "formatter": "__Y_FORMATTER__"},
+        "splitLine": {
+            "show": True,
+            "lineStyle": {"type": "dashed", "color": "#243242", "width": 1},
+        },
     }
 
 

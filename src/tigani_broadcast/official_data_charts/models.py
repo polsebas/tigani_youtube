@@ -29,8 +29,18 @@ PlaybookId = Literal[
     "reservas_bcra_regimes",
     "emae_activity",
     "riesgo_pais_trend",
+    "brecha_cambiaria",
+    "salarios_vs_ipc_base100",
+    "canasta_basica_vs_ipc_base100",
+    "balanza_comercial_ica",
 ]
-PlaybookChartType = Literal["single_line", "dual_base100", "bar_diverging"]
+PlaybookChartType = Literal[
+    "single_line",
+    "dual_base100",
+    "bar_diverging",
+    "dual_spread",
+    "trade_balance",
+]
 
 
 class CatalogEntry(BaseModel):

@@ -14,7 +14,7 @@ from tigani_broadcast.official_data_charts.models import CatalogEntry
 
 def test_list_catalog_entries_devuelve_todos_sin_filtro() -> None:
     entries = list_catalog_entries()
-    assert len(entries) == 33
+    assert len(entries) == 37
     ids = [e.catalog_id for e in entries]
     assert "ar_bcra_reservas_brutas" in ids
     assert "ar_indec_ipc_mensual" in ids
@@ -57,7 +57,7 @@ def test_list_filtra_por_geography_y_source_tier() -> None:
     ar = list_catalog_entries(geography="AR")
     assert ar
     assert all(e.geography == "AR" for e in ar)
-    assert len(ar) == 14
+    assert len(ar) == 18
 
     primary = list_catalog_entries(source_tier="official_primary")
     assert primary

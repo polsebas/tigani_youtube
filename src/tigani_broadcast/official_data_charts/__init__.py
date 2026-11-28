@@ -60,6 +60,8 @@ from tigani_broadcast.official_data_charts.playbook import (
     PLAYBOOK_CATALOG,
     PlaybookChartSpec,
     build_dual_base100,
+    build_dual_spread,
+    build_trade_balance,
     match_playbook_fallback,
 )
 from tigani_broadcast.official_data_charts.providers import (
@@ -88,6 +90,7 @@ from tigani_broadcast.official_data_charts.render import (
     render_artifact_html,
     render_charts_json,
     render_charts_markdown,
+    rerender_charts_package,
     write_charts_package,
 )
 from tigani_broadcast.official_data_charts.resolver import (
@@ -152,6 +155,8 @@ __all__ = [
     "WorldBankProvider",
     "build_chart_narrative",
     "build_dual_base100",
+    "build_dual_spread",
+    "build_trade_balance",
     "build_default_fetcher",
     "build_default_providers",
     "build_default_series_fetcher",
@@ -172,6 +177,7 @@ __all__ = [
     "render_artifact_html",
     "render_charts_json",
     "render_charts_markdown",
+    "rerender_charts_package",
     "resolve_chapters_to_artifacts",
     "resolve_regime_bands",
     "run_cli",

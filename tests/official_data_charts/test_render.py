@@ -7,6 +7,7 @@ import re
 from datetime import date, timedelta
 from pathlib import Path
 
+from tigani_broadcast.official_data_charts.cli import EXIT_ERROR, run_cli
 from tigani_broadcast.official_data_charts.metrics import build_chart_narrative
 from tigani_broadcast.official_data_charts.models import (
     ChartArtifact,
@@ -26,6 +27,7 @@ from tigani_broadcast.official_data_charts.render import (
     render_artifact_html,
     render_charts_json,
     render_charts_markdown,
+    rerender_charts_package,
     write_charts_package,
 )
 
@@ -519,3 +521,149 @@ def test_playbook_pie_dice_contexto_oficial() -> None:
     html = render_artifact_html(artifact, date(2025, 6, 1))
     assert "Contexto oficial · Corte: 01/06/2025" in html
     assert "Citado:" not in html
+
+
+def test_rerender_charts_package_regenera_html_sin_llm_ni_red(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    def _prohibido(*_args: object, **_kwargs: object) -> None:
+        raise AssertionError("rerender-only no debe instanciar LLM ni providers")
+
+    monkeypatch.setattr(
+        "tigani_broadcast.official_data_charts.cli.AgnoMentionResolver",
+        _prohibido,
+    )
+    monkeypatch.setattr(
+        "tigani_broadcast.official_data_charts.cli.build_default_series_fetcher",
+        _prohibido,
+    )
+    monkeypatch.setattr(
+        "tigani_broadcast.official_data_charts.cli.build_agno_model_from_env",
+        _prohibido,
+    )
+
+    charts_json = tmp_path / "charts.json"
+    charts_dir = tmp_path / "charts"
+    package = ChartsPackage(publish_date=date(2025, 12, 11), items=[_verified()])
+    charts_json.write_text(render_charts_json(package), encoding="utf-8")
+
+    result = rerender_charts_package(charts_json, charts_dir=charts_dir)
+    html_path = charts_dir / "ch00_cue001_00.html"
+    assert html_path.is_file()
+    html = html_path.read_text(encoding="utf-8")
+    assert "echarts.init" in html
+    assert "min-width: 960px" in html
+    assert (charts_dir / "echarts.min.js").is_file()
+    assert (tmp_path / "charts.md").is_file()
+    assert result.items[0].html_path == str(html_path)
+
+    code = run_cli(
+        ["--rerender-only", "--output", str(charts_json), "--charts-dir", str(charts_dir)]
+    )
+    assert code == 0
+
+
+def test_cli_rerender_only_falla_si_falta_charts_json(tmp_path: Path, capsys) -> None:
+    missing = tmp_path / "charts.json"
+    code = run_cli(["--rerender-only", "--output", str(missing)])
+    captured = capsys.readouterr()
+    assert code == EXIT_ERROR
+    assert "charts.json" in captured.err
+    assert "sin --rerender-only" in captured.err
+
+
+def test_render_dual_spread_leyenda_indice_y_contexto() -> None:
+    start = date(2025, 1, 1)
+    observations = [
+        SeriesObservation(obs_date=start + timedelta(days=index), value=1000.0 + index)
+        for index in range(30)
+    ]
+    secondary = [
+        DataPoint(obs_date=obs.obs_date, value=float(obs.value or 0) + 200.0)
+        for obs in observations
+    ]
+    option = build_echarts_option(
+        observations,
+        _metrics(
+            start=observations[0].obs_date,
+            end=observations[-1].obs_date,
+            first=1000.0,
+            latest=1029.0,
+        ),
+        chart_type="dual_spread",
+        secondary_points=secondary,
+        unit="ARS por USD",
+    )
+    assert [serie["type"] for serie in option["series"]] == ["line", "line"]
+    assert option["series"][0]["name"] == "Dólar oficial"
+    assert option["series"][0]["lineStyle"]["color"] == "#3db8a8"
+    assert option["series"][0]["showSymbol"] is False
+    assert option["series"][0]["markPoint"]["data"][0]["coord"][0] == 29
+    assert option["series"][1]["name"] == "Dólar blue"
+    assert option["series"][1]["lineStyle"]["color"] == "#e8b84a"
+    assert option["series"][1]["areaStyle"]["color"] == "rgba(232,184,74,0.18)"
+    assert option["series"][1]["markPoint"]["data"][0]["coord"][0] == 29
+    assert option["legend"]["show"] is True
+    base = _verified(observations=observations, label="Brecha cambiaria")
+    assert base.series is not None
+    artifact = base.model_copy(
+        update={
+            "playbook_id": "brecha_cambiaria",
+            "chart_type": "dual_spread",
+            "editorial_note": "Blue <img src=x>",
+            "series": base.series.model_copy(
+                update={"source_attribution": "Fuente: BCRA — Comunicación A 3500"}
+            ),
+            "narrative": ChartNarrative(
+                mode="trend_with_callout",
+                headline_badge="Brecha actual: +20,0%",
+                anchor_date=observations[-1].obs_date.isoformat(),
+                anchor_label="ene-2025",
+            ),
+            "secondary_series": SecondarySeriesData(
+                label="Dólar blue",
+                series_key="ar_mkt_dolar_blue",
+                provider="argentinadatos",
+                series_id="dolares/blue",
+                unit="ARS por USD",
+                points=secondary,
+            ),
+        }
+    )
+    html = render_artifact_html(artifact, date(2025, 12, 11))
+    assert "Contexto oficial · Corte: 11/12/2025" in html
+    assert "Citado:" not in html
+    assert "Blue &lt;img src=x&gt;" in html
+    assert "<img src=x>" not in html
+    assert "Fuente: BCRA" in html
+    assert "ArgentinaDatos" in html or "DolarApi" in html
+    assert "groupThousands" in html
+
+
+def test_render_trade_balance_barras_saldo_y_eje_cero() -> None:
+    observations = [
+        SeriesObservation(obs_date=date(2025, 1, 1), value=100.0),
+        SeriesObservation(obs_date=date(2025, 2, 1), value=80.0),
+    ]
+    secondary = [
+        DataPoint(obs_date=date(2025, 1, 1), value=40.0),
+        DataPoint(obs_date=date(2025, 2, 1), value=90.0),
+    ]
+    option = build_echarts_option(
+        observations,
+        _metrics(start=date(2025, 1, 1), end=date(2025, 2, 1), first=100.0, latest=80.0),
+        chart_type="trade_balance",
+        secondary_points=secondary,
+    )
+    assert [serie["type"] for serie in option["series"]] == ["bar", "bar", "line"]
+    assert option["series"][0]["name"] == "Exportaciones"
+    assert option["series"][0]["itemStyle"]["color"] == "#3db8a8"
+    assert option["series"][1]["name"] == "Importaciones"
+    assert option["series"][1]["itemStyle"]["color"] == "#e57373"
+    assert option["series"][2]["name"] == "Saldo"
+    assert option["series"][2]["lineStyle"]["width"] == 3
+    assert option["series"][2]["data"] == [60.0, -10.0]
+    assert option["series"][2]["markLine"]["data"][0]["yAxis"] == 0
+    assert option["legend"]["show"] is True
+    assert option["yAxis"]["min"] < 0 < option["yAxis"]["max"]

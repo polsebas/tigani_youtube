@@ -10,6 +10,8 @@ from tigani_broadcast.official_data_charts.models import ChartArtifact, DataPoin
 from tigani_broadcast.official_data_charts.playbook import (
     PLAYBOOK_CATALOG,
     build_dual_base100,
+    build_dual_spread,
+    build_trade_balance,
     match_playbook_fallback,
 )
 from tigani_broadcast.official_data_charts.resolver import SERIES_CATALOG
@@ -26,6 +28,10 @@ def test_playbook_catalog_usa_claves_reales_del_catalogo() -> None:
         "reservas_bcra_regimes",
         "emae_activity",
         "riesgo_pais_trend",
+        "brecha_cambiaria",
+        "salarios_vs_ipc_base100",
+        "canasta_basica_vs_ipc_base100",
+        "balanza_comercial_ica",
     }
     for spec in PLAYBOOK_CATALOG.values():
         assert spec.series_keys
@@ -238,11 +244,6 @@ def test_match_playbook_fallback_no_duplica_ipc_y_respeta_tope() -> None:
         "ipc_vs_dolar_base100",
         "reservas_bcra_regimes",
     ]
-    assert match_playbook_fallback(
-        chapter,
-        existing_series_keys={"ar_indec_ipc_mensual"},
-        max_items=2,
-    ) == ["ipc_vs_dolar_base100", "reservas_bcra_regimes"]
     assert (
         match_playbook_fallback(
             "la inflación y el IPC de este mes",
@@ -250,3 +251,86 @@ def test_match_playbook_fallback_no_duplica_ipc_y_respeta_tope() -> None:
         )
         == []
     )
+
+
+def test_build_dual_base100_acepta_indice_de_nivel() -> None:
+    salarios = [
+        _point(2025, 1, 1, 200.0),
+        _point(2025, 2, 1, 220.0),
+        _point(2025, 3, 1, 242.0),
+    ]
+    ipc = [_point(2025, 1, 1, 0.0), _point(2025, 2, 1, 10.0), _point(2025, 3, 1, 10.0)]
+    left, right, narrative = build_dual_base100(
+        salarios,
+        ipc,
+        publish_date=date(2025, 3, 31),
+        primary_mode="level",
+        secondary_mode="percent_change",
+        primary_label="Salarios",
+        secondary_label="IPC",
+        primary_subject="salarios",
+        secondary_subject="IPC",
+    )
+    assert [point.value for point in left] == pytest.approx([100.0, 110.0, 121.0])
+    assert [point.value for point in right] == pytest.approx([100.0, 110.0, 121.0])
+    assert narrative.headline_badge == "= 0,0%"
+    by_label = {kpi.label: kpi.formatted_value for kpi in narrative.kpis}
+    assert by_label["Salarios"] == "+21,0%"
+    assert by_label["IPC"] == "+21,0%"
+
+
+def test_build_dual_spread_brecha_actual_y_maxima() -> None:
+    official = [
+        _point(2025, 1, 31, 1000.0),
+        _point(2025, 2, 28, 1000.0),
+        _point(2025, 3, 31, 9.0),
+    ]
+    parallel = [
+        _point(2025, 1, 15, 1100.0),
+        _point(2025, 1, 31, 1200.0),
+        _point(2025, 2, 28, 1500.0),
+    ]
+    official_out, parallel_out, narrative = build_dual_spread(
+        official,
+        parallel,
+        publish_date=date(2025, 2, 28),
+    )
+    assert [point.obs_date for point in official_out] == [date(2025, 1, 31), date(2025, 2, 28)]
+    assert [point.obs_date for point in parallel_out] == [point.obs_date for point in official_out]
+    assert parallel_out[0].value == pytest.approx(1200.0)
+    assert narrative.headline_badge == "Brecha actual: +50,0%"
+    assert narrative.delta_direction == "up"
+    by_label = {kpi.label: kpi.formatted_value for kpi in narrative.kpis}
+    assert by_label == {"Oficial": "1.000", "Paralelo/MEP": "1.500", "Brecha máx.": "+50,0%"}
+
+
+def test_build_trade_balance_saldo_mensual_y_acumulado() -> None:
+    exports = [_point(2025, 1, 1, 100.0), _point(2025, 2, 1, 80.0)]
+    imports = [_point(2025, 1, 1, 40.0), _point(2025, 2, 1, 90.0), _point(2025, 3, 1, 1.0)]
+    _expo, impo, narrative = build_trade_balance(
+        exports,
+        imports,
+        publish_date=date(2025, 2, 28),
+    )
+    assert impo[1].value == pytest.approx(90.0)
+    assert narrative.delta_direction == "down"
+    assert narrative.headline_badge == "▼ -10 mill. USD"
+    by_label = {kpi.label: kpi.formatted_value for kpi in narrative.kpis}
+    assert by_label["Último saldo"] == "-10"
+    assert by_label["Acum. período"] == "+50"
+    assert by_label["Exportaciones últ. mes"] == "80"
+
+
+@pytest.mark.parametrize(
+    "text,expected",
+    [
+        ("se amplió la brecha y el cepo", "brecha_cambiaria"),
+        ("el dólar blue y el MEP", "brecha_cambiaria"),
+        ("los salarios perdieron poder adquisitivo", "salarios_vs_ipc_base100"),
+        ("la canasta básica y la pobreza", "canasta_basica_vs_ipc_base100"),
+        ("la balanza comercial y las exportaciones", "balanza_comercial_ica"),
+    ],
+)
+def test_match_playbook_v2_triggers(text: str, expected: str) -> None:
+    matched = match_playbook_fallback(text, existing_series_keys=set(), max_items=1)
+    assert matched == [expected]

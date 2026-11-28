@@ -53,7 +53,7 @@ def test_list_official_indicators_y_filtro() -> None:
     server = create_mcp_server(fetcher=_FakeFetcher())  # type: ignore[arg-type]
     all_items = _call(server, "list_official_indicators", {})
     assert isinstance(all_items, list)
-    assert len(all_items) == 33
+    assert len(all_items) == 37
     assert {row["catalog_id"] for row in all_items} >= {
         "ar_bcra_reservas_brutas",
         "ar_mkt_riesgo_pais",

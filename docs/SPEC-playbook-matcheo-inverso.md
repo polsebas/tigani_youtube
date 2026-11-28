@@ -65,6 +65,19 @@ tests/official_data_charts/
 | `emae_activity` | `bar_diverging` | `ar_indec_emae_mensual` | 12 meses | Barras verdes (`>= 0`) y rojas (`< 0`) sobre eje cero. |
 | `riesgo_pais_trend` | `single_line` | `ar_mkt_riesgo_pais` | 12 meses | Último valor en pb, variación vs. mes ant., YTD y rango mín/máx. |
 
+## 5.1 Playbook v2 — Ampliación a 9 gráficos
+
+Playbook v1 sigue vigente. v2 suma cuatro gráficos. Dólar oficial (`ar_bcra_dolar_mayorista`), blue (`ar_mkt_dolar_blue`) y MEP (`ar_mkt_dolar_mep`) ya estaban en el catálogo. Salarios, CBT y el ICA se agregan con `provider="datos_ar"` y el `series_id` de Series de Tiempo.
+
+| `playbook_id` | Tipo | Series | Ventana | Nota |
+| --- | --- | --- | --- | --- |
+| `brecha_cambiaria` | `dual_spread` | `ar_bcra_dolar_mayorista` + `ar_mkt_dolar_blue` | 12 meses | Brecha % blue vs. mayorista A 3500. Badge `Brecha actual`. KPIs: Oficial, Paralelo/MEP, Brecha máx. |
+| `salarios_vs_ipc_base100` | `dual_base100` | `ar_indec_salarios_indice` (`149.1_TL_INDIIOS_OCTU_0_21`, nivel) + `ar_indec_ipc_mensual` (compuesto) | 12 meses (fetch 13m) | Ambos re-indexados a base 100 en t0. |
+| `canasta_basica_vs_ipc_base100` | `dual_base100` | `ar_indec_cbt` (`150.1_CSTA_BATAL_0_D_20`, pesos) + `ar_indec_ipc_mensual` | 12 meses (fetch 13m) | CBT e IPC compuesto en base 100. |
+| `balanza_comercial_ica` | `trade_balance` | `ar_indec_ica_exportaciones` (`74.3_IET_0_M_16`) + `ar_indec_ica_importaciones` (`74.3_IIT_0_M_25`) | 12 meses | Saldo mensual = expo − impo. Badge del último saldo. |
+
+Triggers del fallback (texto sin tildes): `brecha` / `cepo` / `dolar blue` / `dolar paralelo` / `dolar mep` / `ccl`; `salario` / `sueldo` / `poder adquisitivo` / `paritarias` / `ingresos reales`; `canasta basica` / `pobreza` / `indigencia` / `cbt` / `cba`; `balanza comercial` / `exportaciones` / `importaciones` / `intercambio comercial` / `ica`.
+
 ## 6. Code Style
 
 Mismo estilo del repositorio (Python 3.14, Pydantic v2 `extra="forbid"`, funciones puras deterministas, `ruff`):
@@ -126,3 +139,4 @@ class PlaybookChartSpec(BaseModel):
 3. **Ventana de `ipc_vs_dolar_base100`:** 12 meses visibles. El fetch es de 13 meses para construir la base `t0 = 100` (el mes inicial no se aplica como tasa; ancla el índice).
 4. **Tope editorial:** máximo 2 gráficos de playbook por capítulo. No se duplica una serie ya resuelta como `verified_series` en el mismo capítulo (se excluye el playbook cuya serie primaria ya está en ese conjunto).
 5. **Cálculo:** 100 % determinista en Python. Cero números generados por el LLM. Toda observación se recorta a `<= publish_date` antes de alinear, re-indexar o armar KPIs.
+6. **Playbook v2 (Corte 2):** el catálogo pasa a 9 gráficos. `build_dual_base100` acepta primaria en variación % o en nivel. `build_dual_spread` y `build_trade_balance` calculan brecha cambiaria y saldo ICA sin tocar todavía el resolver ni el render.

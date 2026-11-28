@@ -1052,3 +1052,180 @@ def test_playbook_no_repite_reservas_en_dos_capitulos() -> None:
         "quoted_only",
         "quoted_only",
     ]
+
+
+def _market_series(
+    catalog_id: str,
+    provider: str,
+    series_id: str,
+    unit: str,
+    values: tuple[float, float],
+) -> SeriesData:
+    return SeriesData(
+        catalog_id=catalog_id,
+        provider=provider,  # type: ignore[arg-type]
+        source_tier="official_primary" if provider == "datos_ar" else "market_secondary",
+        series_id=series_id,
+        source_url="https://example.test/serie",
+        source_attribution=f"Fuente: {catalog_id}",
+        unit=unit,
+        frequency="monthly",
+        observations=[
+            SeriesObservation(obs_date=date(2025, 10, 1), value=values[0]),
+            SeriesObservation(obs_date=date(2025, 11, 1), value=values[1]),
+        ],
+    )
+
+
+def test_playbook_v2_compuestos_brecha_balanza_y_omision() -> None:
+    salarios = _chapter(
+        _mention(1, "índice de inflación", "2,2%"),
+        _mention(2, "salarios", "poder adquisitivo"),
+        title="Salarios",
+        summary="Los salarios frente a la inflación.",
+    )
+    fetcher = _FetcherFake(  # type: ignore[arg-type]
+        {
+            "ar_indec_ipc_mensual": _ipc_series(),
+            "ar_indec_salarios_indice": _market_series(
+                "ar_indec_salarios_indice",
+                "datos_ar",
+                "149.1_TL_INDIIOS_OCTU_0_21",
+                "índice oct-2016=100",
+                (200.0, 220.0),
+            ),
+            "ar_indec_cbt": _market_series(
+                "ar_indec_cbt",
+                "datos_ar",
+                "150.1_CSTA_BATAL_0_D_20",
+                "pesos corrientes",
+                (1000.0, 1100.0),
+            ),
+            "ar_bcra_dolar_mayorista": _fx_series(),
+            "ar_mkt_dolar_blue": _market_series(
+                "ar_mkt_dolar_blue",
+                "argentinadatos",
+                "dolares/blue",
+                "ARS por USD",
+                (1200.0, 1500.0),
+            ),
+            "ar_indec_ica_exportaciones": _market_series(
+                "ar_indec_ica_exportaciones",
+                "datos_ar",
+                "74.3_IET_0_M_16",
+                "millones de USD",
+                (100.0, 80.0),
+            ),
+            "ar_indec_ica_importaciones": _market_series(
+                "ar_indec_ica_importaciones",
+                "datos_ar",
+                "74.3_IIT_0_M_25",
+                "millones de USD",
+                (40.0, 90.0),
+            ),
+        }
+    )
+    package = resolve_chapters_to_artifacts(
+        ChapterizedTranscript(chapters=[salarios]),
+        date(2025, 12, 11),
+        _ResolverFake(
+            {
+                "índice de inflación": ChartResolutionDraft(
+                    resolution_status="verified_series",
+                    catalog_id="ar_indec_ipc_mensual",
+                    start_date=date(2025, 1, 1),
+                    end_date=date(2025, 11, 1),
+                    rationale="IPC mensual.",
+                ),
+                "salarios": ChartResolutionDraft(
+                    resolution_status="quoted_only",
+                    rationale="Mención de salarios.",
+                ),
+            }
+        ),
+        fetcher,
+    )
+    assert _playbook_ids(package.items) == ["salarios_vs_ipc_base100"]
+    salarios_chart = package.items[-1]
+    assert salarios_chart.chart_type == "dual_base100"
+    assert salarios_chart.series is not None
+    assert salarios_chart.series.unit == "base 100"
+    assert salarios_chart.secondary_series is not None
+    assert salarios_chart.secondary_series.series_key == "ar_indec_ipc_mensual"
+    assert "ipc_trend" not in _playbook_ids(package.items)
+
+    canasta = _chapter(
+        _mention(3, "canasta básica", "pobreza"),
+        title="Precios",
+        summary="Sube la canasta básica.",
+    )
+    balanza = _chapter(
+        _mention(4, "exportaciones", "balanza comercial"),
+        title="Comercio",
+        summary="La balanza comercial del mes.",
+    )
+    blue_a = _chapter(_mention(5, "dólar blue", "cepo"), title="Cambio", summary="Dólar blue.")
+    blue_b = _chapter(_mention(6, "dólar blue", "brecha"), title="Cambio 2", summary="Otra brecha.")
+    video = resolve_chapters_to_artifacts(
+        ChapterizedTranscript(chapters=[canasta, balanza, blue_a, blue_b]),
+        date(2025, 12, 11),
+        _ResolverFake(
+            {
+                "canasta básica": ChartResolutionDraft(
+                    resolution_status="quoted_only",
+                    rationale="Canasta citada.",
+                ),
+                "exportaciones": ChartResolutionDraft(
+                    resolution_status="quoted_only",
+                    rationale="Comercio citado.",
+                ),
+                "dólar blue": ChartResolutionDraft(
+                    resolution_status="quoted_only",
+                    rationale="Blue citado.",
+                ),
+            }
+        ),
+        fetcher,
+    )
+    assert _playbook_ids(video.items) == [
+        "canasta_basica_vs_ipc_base100",
+        "balanza_comercial_ica",
+        "brecha_cambiaria",
+    ]
+    brechas = [item for item in video.items if item.playbook_id == "brecha_cambiaria"]
+    assert len(brechas) == 1
+    assert brechas[0].chart_type == "dual_spread"
+    assert brechas[0].secondary_series is not None
+    assert brechas[0].secondary_series.series_key == "ar_mkt_dolar_blue"
+    trade = next(item for item in video.items if item.playbook_id == "balanza_comercial_ica")
+    assert trade.chart_type == "trade_balance"
+    assert trade.secondary_series is not None
+    assert trade.secondary_series.series_key == "ar_indec_ica_importaciones"
+
+    broken = resolve_chapters_to_artifacts(
+        ChapterizedTranscript(
+            chapters=[
+                _chapter(
+                    _mention(5, "brecha cambiaria", "cepo"),
+                    title="Cambio",
+                    summary="Se amplió la brecha.",
+                )
+            ]
+        ),
+        date(2025, 12, 11),
+        _ResolverFake(
+            {
+                "brecha cambiaria": ChartResolutionDraft(
+                    resolution_status="quoted_only",
+                    rationale="Brecha citada.",
+                )
+            }
+        ),
+        _FetcherFake(  # type: ignore[arg-type]
+            {"ar_bcra_dolar_mayorista": _fx_series()},
+            errors_by_id={"ar_mkt_dolar_blue": ProviderError("HTTP 503 blue")},
+        ),
+    )
+    assert _playbook_ids(broken.items) == []
+    assert broken.items[0].resolution_status == "quoted_only"
+    assert all(item.resolution_status != "fetch_error" for item in broken.items)
