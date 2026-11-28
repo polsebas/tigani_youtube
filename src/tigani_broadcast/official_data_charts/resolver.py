@@ -466,6 +466,8 @@ def resolve_chapters_to_artifacts(
     Fallos de resolución, de fetch o de un playbook no abortan el resto del video.
     """
     items: list[ChartArtifact] = []
+    used_playbook_ids: set[PlaybookId] = set()
+    prior_series_keys: set[str] = set()
     for chapter_index, chapter in enumerate(chapters.chapters):
         chapter_context = f"{chapter.title}. {chapter.summary}".strip()
         chapter_items: list[ChartArtifact] = []
@@ -570,9 +572,16 @@ def resolve_chapters_to_artifacts(
                 publish_date=publish_date,
                 resolver=resolver,
                 fetcher=fetcher,
+                used_playbook_ids=used_playbook_ids,
+                prior_series_keys=prior_series_keys,
             )
         )
         chapter_items.sort(key=_artifact_sort_key)
+        for artifact in chapter_items:
+            if artifact.playbook_id is not None:
+                used_playbook_ids.add(artifact.playbook_id)
+            if artifact.resolution_status == "verified_series" and artifact.series is not None:
+                prior_series_keys.add(artifact.series.catalog_id)
         items.extend(chapter_items)
 
     return ChartsPackage(
@@ -699,6 +708,8 @@ def _playbook_artifacts_for_chapter(
     publish_date: date,
     resolver: MentionResolverEngine,
     fetcher: SeriesFetcher,
+    used_playbook_ids: set[PlaybookId],
+    prior_series_keys: set[str],
 ) -> list[ChartArtifact]:
     existing = _existing_series_keys(mention_items)
     chapter_text = _chapter_playbook_text(chapter)
@@ -708,13 +719,20 @@ def _playbook_artifacts_for_chapter(
         chapter_text,
         existing,
         publish_date,
+        used_playbook_ids=used_playbook_ids,
+        prior_series_keys=prior_series_keys,
     )
     artifacts: list[ChartArtifact] = []
-    emitted: set[PlaybookId] = set()
+    emitted: set[PlaybookId] = set(used_playbook_ids)
     for playbook_id, cue_index, rationale in picks:
         if len(artifacts) >= _PLAYBOOK_MAX_ITEMS:
             break
-        if playbook_id in emitted or not _playbook_allowed(playbook_id, existing, emitted):
+        if not _playbook_allowed(
+            playbook_id,
+            existing,
+            emitted,
+            prior_series_keys=prior_series_keys,
+        ):
             continue
         cue_index, timestamp = _resolve_playbook_anchor(chapter, playbook_id, cue_index)
         artifact = _build_playbook_artifact(
@@ -739,13 +757,21 @@ def _select_playbook_picks(
     chapter_text: str,
     existing_series_keys: set[str],
     publish_date: date,
+    *,
+    used_playbook_ids: set[PlaybookId],
+    prior_series_keys: set[str],
 ) -> list[_PlaybookPick]:
     selector = getattr(resolver, "select_playbooks", None)
     picks: list[_PlaybookPick] = []
     if callable(selector):
         try:
             raw = selector(chapter_text, list(chapter.hard_data), publish_date)
-            picks = _filter_playbook_picks(raw, existing_series_keys)
+            picks = _filter_playbook_picks(
+                raw,
+                existing_series_keys,
+                used_playbook_ids=used_playbook_ids,
+                prior_series_keys=prior_series_keys,
+            )
         except (ResolutionValidationError, ValidationError, TypeError, ValueError) as exc:
             _LOGGER.info("playbook LLM no usable, se usa el fallback: %s", exc)
             picks = []
@@ -753,30 +779,44 @@ def _select_playbook_picks(
         return picks[:_PLAYBOOK_MAX_ITEMS]
     fallback_ids = match_playbook_fallback(
         chapter_text,
-        existing_series_keys=existing_series_keys,
-        max_items=_PLAYBOOK_MAX_ITEMS,
+        existing_series_keys=existing_series_keys | prior_series_keys,
+        max_items=len(PLAYBOOK_CATALOG),
     )
     anchored: list[_PlaybookPick] = []
     for playbook_id in fallback_ids:
         cue_index, _timestamp = _resolve_playbook_anchor(chapter, playbook_id, None)
         anchored.append((playbook_id, cue_index, "Match determinista de playbook."))
-    return _filter_playbook_picks(anchored, existing_series_keys)
+    return _filter_playbook_picks(
+        anchored,
+        existing_series_keys,
+        used_playbook_ids=used_playbook_ids,
+        prior_series_keys=prior_series_keys,
+    )
 
 
 def _filter_playbook_picks(
     raw: object,
     existing_series_keys: set[str],
+    *,
+    used_playbook_ids: set[PlaybookId] | None = None,
+    prior_series_keys: set[str] | None = None,
 ) -> list[_PlaybookPick]:
     if not isinstance(raw, list):
         return []
     chosen: list[_PlaybookPick] = []
-    emitted: set[PlaybookId] = set()
+    emitted: set[PlaybookId] = set(used_playbook_ids or ())
+    prior = prior_series_keys or set()
     for item in raw:
         parsed = _coerce_playbook_pick(item)
         if parsed is None:
             continue
         playbook_id, cue_index, rationale = parsed
-        if not _playbook_allowed(playbook_id, existing_series_keys, emitted):
+        if not _playbook_allowed(
+            playbook_id,
+            existing_series_keys,
+            emitted,
+            prior_series_keys=prior,
+        ):
             continue
         emitted.add(playbook_id)
         chosen.append((playbook_id, cue_index, rationale))
@@ -803,10 +843,15 @@ def _playbook_allowed(
     playbook_id: PlaybookId,
     existing_series_keys: set[str],
     emitted: set[PlaybookId],
+    *,
+    prior_series_keys: set[str] | None = None,
 ) -> bool:
     if playbook_id in emitted or playbook_id not in PLAYBOOK_CATALOG:
         return False
     spec = PLAYBOOK_CATALOG[playbook_id]
+    prior = prior_series_keys or set()
+    if playbook_id == "ipc_trend" and spec.series_keys[0] in prior:
+        return False
     if playbook_id == "ipc_vs_dolar_base100":
         return True
     if spec.chart_type in {"single_line", "bar_diverging"}:

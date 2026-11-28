@@ -23,6 +23,7 @@ from tigani_broadcast.official_data_charts.models import (
 )
 
 _DENSE_LABEL_MAX = 14
+_DENSE_SYMBOL_MAX = 24
 _ASSETS_DIR = Path(__file__).resolve().parent / "assets"
 _ECHARTS_ASSET = _ASSETS_DIR / "echarts.min.js"
 _ECHARTS_FILENAME = "echarts.min.js"
@@ -433,7 +434,7 @@ def _verified_body(artifact: ChartArtifact, publish_date: date) -> str:
     {kpi_html}
     <div>{footer}</div>
     {note_html}
-    <p class="meta">Citado: {html.escape(artifact.raw_value_text)} · {corte}</p>
+    <p class="meta">{_cited_line(artifact, corte)}</p>
     {provisional}
   </footer>
 """
@@ -460,6 +461,13 @@ def _verified_body(artifact: ChartArtifact, publish_date: date) -> str:
     {provisional}
   </footer>
 """
+
+
+def _cited_line(artifact: ChartArtifact, corte: str) -> str:
+    """`corte` ya viene escapado. El playbook no repite el texto citado del locutor."""
+    if artifact.playbook_id is not None:
+        return f"Contexto oficial · {corte}"
+    return f"Citado: {html.escape(artifact.raw_value_text)} · {corte}"
 
 
 def _editorial_note_html(artifact: ChartArtifact) -> str:
@@ -516,6 +524,7 @@ def build_echarts_option(
     series_payload: dict[str, Any] = {
         "type": "line",
         "smooth": 0.2,
+        "showSymbol": n <= _DENSE_SYMBOL_MAX,
         "symbol": "circle",
         "symbolSize": 9,
         "data": values,
@@ -545,13 +554,12 @@ def build_echarts_option(
     }
 
     if not show_all_labels:
-        series_payload["markPoint"] = _mark_point_payload(categories, values, unit=unit)
+        series_payload["markPoint"] = _mark_point_payload(values, unit=unit)
 
     if narrative is not None and narrative.regime_bands:
         series_payload["markArea"] = _mark_area_payload(
             narrative,
             dates=[item[0] for item in points],
-            categories=categories,
         )
 
     return {
@@ -860,12 +868,21 @@ def _echarts_chart_html(
 <script>
 (function () {{
   const unit = {unit_json};
+  function groupThousands(digits) {{
+    return digits.replace(/\\B(?=(\\d{{3}})+(?!\\d))/g, ".");
+  }}
   function formatValue(value) {{
     const n = Number(value);
     if (!Number.isFinite(n)) return "";
-    const body = (Math.abs(n - Math.round(n)) < 1e-9)
-      ? String(Math.round(n))
-      : n.toFixed(1).replace(".", ",");
+    const abs = Math.abs(n);
+    const whole = Math.abs(abs - Math.round(abs)) < 1e-9;
+    let body = whole ? String(Math.round(abs)) : abs.toFixed(1).replace(".", ",");
+    if (abs >= 1000) {{
+      const parts = body.split(",");
+      parts[0] = groupThousands(parts[0]);
+      body = parts.join(",");
+    }}
+    if (n < 0) body = "-" + body;
     const u = String(unit || "").trim().toLowerCase();
     if (u === "%" || u === "p.p." || u === "pp" || u.includes("%") || u.includes("porcent")) {{
       return body + "%";
@@ -958,7 +975,6 @@ def _format_month_tick(obs_date: date, *, show_year: bool) -> str:
 
 
 def _mark_point_payload(
-    categories: list[str],
     values: list[float],
     *,
     unit: str,
@@ -971,7 +987,7 @@ def _mark_point_payload(
         points.append(
             {
                 "name": name,
-                "coord": [categories[index], values[index]],
+                "coord": [index, values[index]],
                 "value": values[index],
                 "label": {
                     "show": True,
@@ -994,7 +1010,6 @@ def _mark_area_payload(
     narrative: ChartNarrative,
     *,
     dates: list[date],
-    categories: list[str],
 ) -> dict[str, Any]:
     data: list[list[dict[str, Any]]] = []
     for index, band in enumerate(narrative.regime_bands):
@@ -1008,7 +1023,7 @@ def _mark_area_payload(
             [
                 {
                     "name": safe_label,
-                    "xAxis": categories[start_i],
+                    "xAxis": start_i,
                     "itemStyle": {"color": fill},
                     "label": {
                         "show": True,
@@ -1018,7 +1033,7 @@ def _mark_area_payload(
                         "formatter": safe_label,
                     },
                 },
-                {"xAxis": categories[end_i]},
+                {"xAxis": end_i},
             ]
         )
     return {"silent": True, "data": data}

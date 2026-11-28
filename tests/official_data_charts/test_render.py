@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import json
 import re
-from datetime import date
+from datetime import date, timedelta
 from pathlib import Path
 
 from tigani_broadcast.official_data_charts.metrics import build_chart_narrative
@@ -463,3 +463,59 @@ def test_render_bar_diverging_colores_y_eje_cero() -> None:
     assert option["series"][0]["data"][1]["label"]["position"] == "bottom"
     assert option["series"][0]["markLine"]["data"][0]["yAxis"] == 0
     assert option["yAxis"]["min"] < 0 < option["yAxis"]["max"]
+
+
+def test_serie_densa_usa_indices_enteros_y_oculta_simbolos() -> None:
+    start = date(2023, 6, 1)
+    observations = [
+        SeriesObservation(obs_date=start + timedelta(days=10 * index), value=40_000.0 + index)
+        for index in range(30)
+    ]
+    narrative = ChartNarrative(
+        mode="term_comparison",
+        anchor_date=observations[-1].obs_date.isoformat(),
+        anchor_label="mar-2024",
+        regime_bands=[
+            RegimeBand(
+                label="Fernández (2019–23)",
+                start_date=date(2023, 6, 1),
+                end_date=date(2023, 12, 9),
+            ),
+            RegimeBand(
+                label="Milei (2023–act.)",
+                start_date=date(2023, 12, 10),
+                end_date=observations[-1].obs_date,
+            ),
+        ],
+    )
+    option = build_echarts_option(
+        observations,
+        _metrics(
+            start=observations[0].obs_date,
+            end=observations[-1].obs_date,
+            first=40_000.0,
+            latest=40_029.0,
+        ),
+        narrative=narrative,
+        unit="millones de USD",
+    )
+    series = option["series"][0]
+    assert series["showSymbol"] is False
+    assert all(isinstance(point["coord"][0], int) for point in series["markPoint"]["data"])
+    for band in series["markArea"]["data"]:
+        assert isinstance(band[0]["xAxis"], int)
+        assert isinstance(band[1]["xAxis"], int)
+        assert band[0]["xAxis"] <= band[1]["xAxis"]
+    html = render_artifact_html(
+        _verified(observations=observations).model_copy(update={"narrative": narrative}),
+        date(2025, 12, 11),
+    )
+    assert "groupThousands" in html
+    assert "\\B(?=(\\d{3})+(?!\\d))" in html or r"\B(?=(\d{3})+(?!\d))" in html
+
+
+def test_playbook_pie_dice_contexto_oficial() -> None:
+    artifact = _narrative_artifact().model_copy(update={"playbook_id": "reservas_bcra_regimes"})
+    html = render_artifact_html(artifact, date(2025, 6, 1))
+    assert "Contexto oficial · Corte: 01/06/2025" in html
+    assert "Citado:" not in html

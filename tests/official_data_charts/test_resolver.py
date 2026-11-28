@@ -1022,3 +1022,33 @@ def test_playbook_tope_dos_y_omite_fetch_roto() -> None:
     )
     assert _playbook_ids(omitted.items) == ["ipc_vs_dolar_base100"]
     assert all(item.resolution_status != "fetch_error" for item in omitted.items)
+
+
+def test_playbook_no_repite_reservas_en_dos_capitulos() -> None:
+    def _reservas_chapter(cue: int) -> Chapter:
+        return _chapter(
+            _mention(cue, "reservas netas", "negativas"),
+            title="Reservas",
+            summary="Las reservas netas siguen negativas.",
+        )
+
+    package = resolve_chapters_to_artifacts(
+        ChapterizedTranscript(chapters=[_reservas_chapter(2), _reservas_chapter(8)]),
+        date(2025, 12, 11),
+        _ResolverFake(
+            {
+                "reservas netas": ChartResolutionDraft(
+                    resolution_status="quoted_only",
+                    rationale="Sin serie de reservas netas.",
+                )
+            }
+        ),
+        _FetcherFake({"ar_bcra_reservas_brutas": _reservas_series()}),  # type: ignore[arg-type]
+    )
+    playbooks = [item for item in package.items if item.playbook_id == "reservas_bcra_regimes"]
+    assert len(playbooks) == 1
+    assert playbooks[0].chapter_index == 0
+    assert [item.resolution_status for item in package.items if item.playbook_id is None] == [
+        "quoted_only",
+        "quoted_only",
+    ]
