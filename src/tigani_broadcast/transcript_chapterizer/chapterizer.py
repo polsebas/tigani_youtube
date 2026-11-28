@@ -1,5 +1,7 @@
 """Segmentación con un motor inyectable. Agno 3.2.1 usa `output_schema`, no `response_model`."""
 
+import re
+import unicodedata
 from collections.abc import Callable, Sequence
 from typing import Protocol, TypeVar, runtime_checkable
 
@@ -34,6 +36,48 @@ from tigani_broadcast.transcript_chapterizer.validate import (
     ChapterValidationError,
     validate_chapterized_transcript,
 )
+
+_PROMO_SIGNALS = (
+    "nivel uno",
+    "nivel dos",
+    "unirte",
+    "membresia",
+    "comunidad",
+    "microba",
+    "iniciativa emprendedora",
+    "macroeconomia facil",
+    "entrenamientos",
+)
+_WORD_GAP = re.compile(r"\s+")
+
+
+def _fold_text(text: str) -> str:
+    decomposed = unicodedata.normalize("NFKD", text)
+    without_marks = "".join(ch for ch in decomposed if not unicodedata.combining(ch))
+    return _WORD_GAP.sub(" ", without_marks.casefold()).strip()
+
+
+def is_promo_outro_text(text: str) -> bool:
+    """True si hay al menos dos señales de cierre promocional del canal."""
+    folded = _fold_text(text)
+    hits = sum(1 for signal in _PROMO_SIGNALS if signal in folded)
+    return hits >= 2
+
+
+def promo_outro_details() -> DraftChapterDetails:
+    """Detalle vacío: el cierre no cataloga clases, minutos ni niveles."""
+    return DraftChapterDetails(
+        summary="Cierre promocional del canal, sin cifras económicas.",
+        suggested_lower_third="Sumate a la comunidad",
+        hard_data=[],
+        visual_subjects=[],
+        chapter_kind="promo_outro",
+    )
+
+
+def _segment_text(cues: Sequence[Cue]) -> str:
+    return " ".join(cue.text for cue in cues)
+
 
 SEGMENTER_INSTRUCTIONS = "\n".join(
     (
@@ -75,6 +119,16 @@ EXTRACTOR_INSTRUCTIONS = "\n".join(
         "Si hay time_reference, es una expresión dicha en la cue. Si no hay, dejala en null.",
         "Incluí visual_subjects cuando haya actores, organismos o conceptos clave.",
         "Una intro o un cierre pueden llevar las listas vacías.",
+        (
+            "Si el tramo es el cierre promocional del canal (suscripción, membresías "
+            '"Nivel 1" / "Nivel 2", cursos como MicroMBA, Iniciativa Emprendedora o '
+            'Macroeconomía Fácil), poné chapter_kind="promo_outro".'
+        ),
+        (
+            "Un promo_outro no lleva hard_data ni visual_subjects: ni cantidad de clases, "
+            "ni minutos, ni niveles."
+        ),
+        'Si el tramo es editorial, chapter_kind="editorial".',
         (
             "summary, suggested_lower_third, indicator_label, subject_label y context_text "
             "van 100 % en español."
@@ -189,6 +243,7 @@ def assemble_chapterized_transcript(
                 suggested_lower_third=chapter.suggested_lower_third,
                 hard_data=hard_data[position],
                 visual_subjects=visual_subjects[position],
+                chapter_kind=chapter.chapter_kind,
             )
             for position, chapter in enumerate(draft.chapters)
         ]
@@ -288,12 +343,16 @@ class AgnoChapterizer:
                 f"el paso 2 no recibió un DraftChapterPlan (recibido: {received})"
             )
         details: list[DraftChapterDetails] = []
-        for boundary in plan.chapters:
+        last_index = len(plan.chapters) - 1
+        for position, boundary in enumerate(plan.chapters):
             segment = [
                 cue
                 for cue in self._cues
                 if boundary.start_cue_index <= cue.cue_index <= boundary.end_cue_index
             ]
+            if position == last_index and is_promo_outro_text(_segment_text(segment)):
+                details.append(promo_outro_details())
+                continue
             self.grounding.bind(
                 self._cues,
                 start=boundary.start_cue_index,
@@ -308,6 +367,10 @@ class AgnoChapterizer:
                 received = type(content).__name__
                 raise ChapterizerOutputError(
                     f"el agente no devolvió un DraftChapterDetails (recibido: {received})"
+                )
+            if content.chapter_kind == "promo_outro":
+                content = content.model_copy(
+                    update={"hard_data": [], "visual_subjects": [], "chapter_kind": "promo_outro"}
                 )
             details.append(content)
         draft = _merge_plan(plan, details)
@@ -456,6 +519,7 @@ def _merge_plan(
                 title=boundary.title,
                 summary=detail.summary,
                 suggested_lower_third=detail.suggested_lower_third,
+                chapter_kind=detail.chapter_kind,
             )
             for boundary, detail in zip(plan.chapters, details, strict=True)
         ],

@@ -1,6 +1,7 @@
 """Post-hooks deterministas. Agno 3.2.1 los ejecuta con `run_output`, sin otra llamada al modelo."""
 
 import re
+import unicodedata
 from abc import abstractmethod
 from collections.abc import Sequence
 from decimal import Decimal
@@ -21,14 +22,66 @@ MAX_LOWER_THIRD_LENGTH = 100
 _NUMBER = re.compile(r"(?<!\d)(?:\d{1,3}(?:[.,]\d{3})+(?:[.,]\d+)?|\d+(?:[.,]\d+)?)(?!\d)")
 _NUMERIC_CUE = re.compile(r"\d|%")
 _YEAR_IN_LABEL = re.compile(r"(?<!\d)(?:19|20)\d{2}(?!\d)")
+# Frases largas primero: "cuarenta y cinco" no debe partirse en 40 y 5.
+_WORD_NUMBERS: tuple[tuple[str, int], ...] = (
+    ("cuarenta y cinco", 45),
+    ("veintinueve", 29),
+    ("veintiocho", 28),
+    ("veintisiete", 27),
+    ("veintiseis", 26),
+    ("veinticinco", 25),
+    ("veinticuatro", 24),
+    ("veintitres", 23),
+    ("veintidos", 22),
+    ("veintiuno", 21),
+    ("diecinueve", 19),
+    ("dieciocho", 18),
+    ("diecisiete", 17),
+    ("dieciseis", 16),
+    ("quince", 15),
+    ("catorce", 14),
+    ("trece", 13),
+    ("doce", 12),
+    ("once", 11),
+    ("diez", 10),
+    ("nueve", 9),
+    ("ocho", 8),
+    ("siete", 7),
+    ("seis", 6),
+    ("cinco", 5),
+    ("cuatro", 4),
+    ("tres", 3),
+    ("dos", 2),
+    ("una", 1),
+    ("uno", 1),
+    ("un", 1),
+    ("cero", 0),
+    ("treinta", 30),
+    ("cuarenta", 40),
+    ("cincuenta", 50),
+    ("sesenta", 60),
+    ("ciento", 100),
+    ("cien", 100),
+    ("mil", 1000),
+)
 
 
 def normalized_numbers(text: str) -> frozenset[Decimal]:
-    """Cifras comparables. `8,000`, `8.000` y `8000` coinciden; `2.5` y `2,5` también."""
+    """Cifras comparables. `8,000` coincide con `8000`; `cinco` coincide con `5`."""
     found: set[Decimal] = set()
     for match in _NUMBER.finditer(text):
         found.add(_parse_number(match.group(0)))
+    folded = _fold_words(text)
+    for phrase, value in _WORD_NUMBERS:
+        if re.search(rf"(?<![a-z]){re.escape(phrase)}(?![a-z])", folded):
+            found.add(Decimal(value))
     return frozenset(found)
+
+
+def _fold_words(text: str) -> str:
+    decomposed = unicodedata.normalize("NFKD", text)
+    without_marks = "".join(ch for ch in decomposed if not unicodedata.combining(ch))
+    return without_marks.casefold()
 
 
 def numeric_cue_indexes(cues: Sequence[Cue]) -> list[int]:
@@ -100,17 +153,19 @@ class CueGroundingGuardrail(_OutputGuardrail):
                 changed = True
                 continue
             anchored = self._anchor(mention)
+            if anchored is None:
+                changed = True
+                continue
             updated.append(anchored)
             changed = changed or anchored is not mention
         if changed:
             run_output.content = content.model_copy(update={"hard_data": updated})
 
-    def _anchor(self, mention: DraftHardDataMention) -> DraftHardDataMention:
+    def _anchor(self, mention: DraftHardDataMention) -> DraftHardDataMention | None:
+        """Reancla si hay una sola cue. Si no está, o está en varias, descarta la mención."""
         wanted = normalized_numbers(mention.raw_value_text)
         if not wanted:
-            self._fail(
-                f"raw_value_text no contiene una cifra verificable: {mention.raw_value_text!r}"
-            )
+            return None
         if self._has_numbers(mention.cue_index, wanted):
             return mention
         neighbors = [
@@ -121,22 +176,11 @@ class CueGroundingGuardrail(_OutputGuardrail):
         if len(neighbors) == 1:
             return mention.model_copy(update={"cue_index": neighbors[0]})
         if len(neighbors) > 1:
-            self._fail(
-                f"la cifra {mention.raw_value_text!r} aparece en más de una cue "
-                f"adyacente a {mention.cue_index}"
-            )
+            return None
         matches = self._chapter_matches(wanted)
         if len(matches) == 1:
             return mention.model_copy(update={"cue_index": matches[0]})
-        if len(matches) > 1:
-            self._fail(
-                f"la cifra {mention.raw_value_text!r} aparece en más de una cue del capítulo "
-                f"{self.start}..{self.end}"
-            )
-        self._fail(
-            f"la cifra {mention.raw_value_text!r} no aparece en la cue {mention.cue_index} "
-            f"ni en el capítulo {self.start}..{self.end}"
-        )
+        return None
 
     def _chapter_matches(self, wanted: frozenset[Decimal]) -> list[int]:
         return [

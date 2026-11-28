@@ -7,6 +7,8 @@ from pydantic import BaseModel, ConfigDict, Field, field_validator, model_valida
 
 _CLOCK = re.compile(r"^(?P<hours>\d{2,}):(?P<minutes>\d{2}):(?P<seconds>\d{2})$")
 
+ChapterKind = Literal["editorial", "promo_outro"]
+
 
 def canonical_timestamp(hours: int, minutes: int, seconds: int) -> str:
     """Arma `HH:MM:SS`. Las horas conservan su ancho a partir de dos dígitos."""
@@ -129,6 +131,7 @@ class Chapter(BaseModel):
     suggested_lower_third: str
     hard_data: list[HardDataMention] = Field(default_factory=list)
     visual_subjects: list[VisualSubjectMention] = Field(default_factory=list)
+    chapter_kind: ChapterKind = "editorial"
 
     @field_validator("start_time", "end_time")
     @classmethod
@@ -170,6 +173,7 @@ class DraftChapter(BaseModel):
             "No mezclar un monto de vencimiento con un monto colocado."
         )
     )
+    chapter_kind: ChapterKind = "editorial"
 
 
 class DraftHardDataMention(BaseModel):
@@ -299,6 +303,7 @@ class DraftChapterDetails(BaseModel):
             "y time_reference real, o null si no hubo marca temporal."
         ),
     )
+    chapter_kind: ChapterKind = "editorial"
     visual_subjects: list[DraftVisualSubjectMention] = Field(
         default_factory=list,
         description=(

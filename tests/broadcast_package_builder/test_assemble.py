@@ -632,3 +632,63 @@ def test_fallback_card_se_copia_sin_imagen(tmp_path: Path) -> None:
     assert any(s.status == "fallback_card" for s in manifest.slides)
     assert (tmp_path / "package" / "slides" / "visuals" / "fallback.html").is_file()
     assert list((tmp_path / "package" / "slides" / "visuals" / "images").iterdir()) == []
+
+
+def _promo_inputs() -> tuple[ChapterizedTranscript, ChartsPackage, VisualAssetsPackage]:
+    chapters = ChapterizedTranscript(
+        chapters=[
+            Chapter(
+                start_cue_index=0,
+                end_cue_index=2,
+                start_time="00:11:15",
+                end_time="00:12:32",
+                title="Cierre",
+                summary="Invitación a la comunidad.",
+                suggested_lower_third="Sumate",
+                chapter_kind="promo_outro",
+            )
+        ]
+    )
+    charts = ChartsPackage(publish_date=date(2026, 11, 28), items=[])
+    assets = VisualAssetsPackage(items=[])
+    return chapters, charts, assets
+
+
+def test_placa_de_cierre_sin_imagen(tmp_path: Path) -> None:
+    chapters, charts, assets = _promo_inputs()
+    manifest = assemble_broadcast_package(
+        chapters,
+        charts,
+        assets,
+        output_dir=tmp_path / "package",
+        video_title="Caputo",
+    )
+    html_path = tmp_path / "package" / "slides" / "chapters" / "ch00_outro.html"
+    html = html_path.read_text(encoding="utf-8")
+    assert html_path.is_file()
+    assert "Sumate a la comunidad · Nivel 1 y Nivel 2" in html
+    assert "min-width: 960px" in html
+    assert "max-width: 1920px" not in html
+    assert "00:11:15" in html
+    assert any(slide.kind == "promo_outro" for slide in manifest.slides)
+
+
+def test_placa_de_cierre_con_imagen(tmp_path: Path) -> None:
+    image = tmp_path / "outro.png"
+    image.write_bytes(b"\x89PNG\r\n")
+    chapters, charts, assets = _promo_inputs()
+    manifest = assemble_broadcast_package(
+        chapters,
+        charts,
+        assets,
+        output_dir=tmp_path / "package",
+        video_title="Caputo",
+        outro_image=image,
+    )
+    html = (tmp_path / "package" / "slides" / "chapters" / "ch00_outro.html").read_text(
+        encoding="utf-8"
+    )
+    assert 'src="../outro.png"' in html
+    assert "object-fit: contain" in html
+    assert (tmp_path / "package" / "slides" / "outro.png").is_file()
+    assert manifest.slides[-1].kind == "promo_outro"

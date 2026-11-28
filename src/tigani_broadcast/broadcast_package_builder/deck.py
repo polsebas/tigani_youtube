@@ -95,6 +95,111 @@ html, body {
 """
 
 
+def render_promo_outro_html(
+    timestamp: str,
+    *,
+    video_title: str,
+    relative_image: str | None = None,
+) -> str:
+    """Placa de cierre promocional, con imagen estándar o texto sobrio si no hay archivo."""
+    clock = html.escape(timestamp)
+    title = html.escape(video_title)
+    if relative_image is not None:
+        src = html.escape(relative_image, quote=True)
+        body = f'<figure class="media"><img src="{src}" alt="Cierre del programa"/></figure>'
+    else:
+        body = (
+            '<section class="card">'
+            '<p class="kicker">Cierre</p>'
+            "<h1>Sumate a la comunidad · Nivel 1 y Nivel 2</h1>"
+            f'<p class="meta">{title}</p>'
+            "</section>"
+        )
+    return f"""<!DOCTYPE html>
+<html lang="es">
+<head>
+  <meta charset="utf-8"/>
+  <meta name="viewport" content="width=device-width, initial-scale=1"/>
+  <title>Cierre · {title}</title>
+  <style>
+    * {{ box-sizing: border-box; }}
+    html, body {{
+      margin: 0;
+      width: 100%;
+      height: 100%;
+      min-width: 960px;
+      min-height: 540px;
+      overflow: auto;
+      background: #000;
+      color: #f4f7fb;
+      font-family: "IBM Plex Sans", "Segoe UI", sans-serif;
+    }}
+    .plate {{
+      width: 100%;
+      height: 100%;
+      min-width: 960px;
+      min-height: 540px;
+      display: grid;
+      grid-template-rows: auto minmax(0, 1fr);
+      background:
+        radial-gradient(1200px 500px at 10% -10%, #1d3348 0%, transparent 55%),
+        linear-gradient(160deg, #101820 0%, #0c1219 100%);
+    }}
+    .banner {{
+      display: flex;
+      justify-content: space-between;
+      padding: 1.2% 2%;
+      color: #9db0c3;
+      font-size: clamp(14px, 1.4vw, 44px);
+      letter-spacing: 0.06em;
+      text-transform: uppercase;
+    }}
+    .mark {{ color: #3db8a8; font-weight: 700; }}
+    .media, .card {{
+      min-height: 0;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+    }}
+    .media img {{
+      width: 100%;
+      height: 100%;
+      object-fit: contain;
+      background: #0a1017;
+    }}
+    .card {{
+      flex-direction: column;
+      text-align: center;
+      padding: 4%;
+      gap: 0.6em;
+    }}
+    h1 {{
+      margin: 0;
+      font-size: clamp(28px, 3.4vw, 96px);
+      line-height: 1.1;
+    }}
+    .kicker {{
+      margin: 0;
+      color: #3db8a8;
+      letter-spacing: 0.08em;
+      text-transform: uppercase;
+      font-size: clamp(14px, 1.4vw, 36px);
+    }}
+    .meta {{ margin: 0; color: #9db0c3; font-size: clamp(16px, 1.6vw, 40px); }}
+  </style>
+</head>
+<body>
+  <article class="plate">
+    <header class="banner">
+      <span class="mark">Cierre</span><span class="clock">{clock}</span>
+    </header>
+    {body}
+  </article>
+</body>
+</html>
+"""
+
+
 def render_chapter_cover_html(
     chapter_index: int,
     chapter_title: str,

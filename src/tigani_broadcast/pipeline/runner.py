@@ -386,6 +386,8 @@ def _package_argv(config: PipelineConfig, paths: _WorkspacePaths) -> list[str]:
         argv.append("--no-chapter-covers")
     if config.include_errors:
         argv.append("--include-errors")
+    if config.outro_image is not None:
+        argv.extend(["--outro-image", str(config.outro_image)])
     return argv
 
 

@@ -209,6 +209,7 @@ def test_el_borrador_no_lleva_timestamps_ni_menciones_anidadas() -> None:
         "title",
         "summary",
         "suggested_lower_third",
+        "chapter_kind",
     }
     assert hard_fields == {"cue_index", "indicator_label", "raw_value_text", "time_reference"}
     assert visual_fields == {"cue_index", "subject_label", "asset_kind", "context_text"}

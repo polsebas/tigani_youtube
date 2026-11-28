@@ -47,6 +47,7 @@ def run_cli(argv: Sequence[str] | None = None) -> int:
             video_url=args.video_url,
             include_chapter_covers=not args.no_chapter_covers,
             include_errors=args.include_errors,
+            outro_image=args.outro_image,
         )
         write_deck_files(chapters, manifest, output_dir)
         write_publishing_files(chapters, charts, manifest, output_dir)
@@ -129,5 +130,11 @@ def _parser() -> argparse.ArgumentParser:
         "--include-errors",
         action="store_true",
         help="Incluye placas fetch_error en deck.html",
+    )
+    parser.add_argument(
+        "--outro-image",
+        type=Path,
+        default=None,
+        help="Imagen del cierre promocional (si no, assets/outro.png o assets/outro.jpg)",
     )
     return parser

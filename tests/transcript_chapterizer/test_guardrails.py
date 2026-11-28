@@ -165,7 +165,7 @@ def test_reancla_4600_de_la_cue_17_a_la_cue_19() -> None:
     assert run.content.hard_data[0].cue_index == 19
 
 
-def test_rechaza_si_la_cifra_aparece_en_dos_cues_lejanas_del_capitulo() -> None:
+def test_descarta_si_la_cifra_aparece_en_dos_cues_lejanas_del_capitulo() -> None:
     cues = _cues(
         "deuda de 4600 millones",
         "sin cifra",
@@ -173,46 +173,49 @@ def test_rechaza_si_la_cifra_aparece_en_dos_cues_lejanas_del_capitulo() -> None:
         "sigue sin la cifra",
         "otra vez 4600 millones",
     )
-    run = _draft(*[cue.text for cue in cues], mentions=[_hard(2, "4600 millones", "deuda")])
+    run = _draft(
+        *[cue.text for cue in cues],
+        mentions=[_hard(2, "4600 millones", "deuda")],
+    )
     guard = CueGroundingGuardrail()
     guard.bind(cues)
 
-    with pytest.raises(OutputCheckError, match="más de una cue del capítulo"):
-        guard.check(run)  # type: ignore[arg-type]
+    guard.check(run)  # type: ignore[arg-type]
 
-    assert run.content.hard_data[0].cue_index == 2
+    assert run.content.hard_data == []
 
 
-def test_rechaza_si_la_cifra_no_esta_en_el_capitulo() -> None:
-    cues = _cues("teníamos 8,000", "sin cifra", "tampoco")
-    run = _draft(*[cue.text for cue in cues], mentions=[_hard(2, "8,000")])
+def test_descarta_si_la_cifra_no_esta_en_el_capitulo() -> None:
+    cues = _cues("teníamos 8,000", "sin cifra", "tampoco hay cifra escrita")
+    run = _draft(
+        *[cue.text for cue in cues],
+        mentions=[_hard(2, "5", "clases"), _hard(0, "8,000")],
+    )
     guard = CueGroundingGuardrail()
     guard.bind(cues, start=1, end=2)
 
-    with pytest.raises(OutputCheckError, match="no aparece en la cue 2"):
-        guard.check(run)  # type: ignore[arg-type]
+    guard.check(run)  # type: ignore[arg-type]
 
-    assert run.content.hard_data[0].cue_index == 2
+    assert run.content.hard_data == []
 
 
-def test_rechaza_si_la_cifra_esta_en_las_dos_cues_adyacentes() -> None:
+def test_descarta_si_la_cifra_esta_en_las_dos_cues_adyacentes() -> None:
     cues = _cues("teníamos 8,000", "sin cifra", "también 8.000")
     run = _draft(*[cue.text for cue in cues], mentions=[_hard(1, "8000")])
     guard = CueGroundingGuardrail()
     guard.bind(cues)
 
-    with pytest.raises(OutputCheckError, match="más de una cue adyacente"):
-        guard.check(run)  # type: ignore[arg-type]
+    guard.check(run)  # type: ignore[arg-type]
 
-    assert run.content.hard_data[0].cue_index == 1
+    assert run.content.hard_data == []
 
 
 def test_descarta_raw_value_text_sin_digito() -> None:
-    cues = _cues("cinco clases más", "la tasa fue 34,5%")
+    cues = _cues("la mitad del relato", "la tasa fue 34,5%")
     run = _draft(
         *[cue.text for cue in cues],
         mentions=[
-            _hard(0, "cinco clases más", "clases del curso"),
+            _hard(0, "la mitad", "relato"),
             _hard(1, "34,5%", "tasa"),
         ],
     )
@@ -222,6 +225,21 @@ def test_descarta_raw_value_text_sin_digito() -> None:
     guard.check(run)  # type: ignore[arg-type]
 
     assert [mention.raw_value_text for mention in run.content.hard_data] == ["34,5%"]
+
+
+def test_cinco_equivale_a_5_y_se_ancla_en_la_cue() -> None:
+    assert normalized_numbers("cinco") == normalized_numbers("5")
+    assert normalized_numbers("diez") == normalized_numbers("10")
+    cues = _cues("cinco clases de entre 45 minutos", "sin otra cifra dicha")
+    run = _draft(*[cue.text for cue in cues], mentions=[_hard(1, "5", "clases")])
+    guard = CueGroundingGuardrail()
+    guard.bind(cues)
+
+    guard.check(run)  # type: ignore[arg-type]
+
+    assert len(run.content.hard_data) == 1
+    assert run.content.hard_data[0].cue_index == 0
+    assert run.content.hard_data[0].raw_value_text == "5"
 
 
 def test_rechaza_anio_en_indicator_label_sin_time_reference() -> None:
@@ -288,9 +306,8 @@ def test_reancla_dentro_del_tramo_y_rechaza_la_coincidencia_de_afuera() -> None:
 
     afuera = _draft(*[cue.text for cue in cues], mentions=[_hard(1, "8000")])
     guard.bind(cues, start=1, end=1)
-    with pytest.raises(OutputCheckError, match="no aparece en la cue 1"):
-        guard.check(afuera)  # type: ignore[arg-type]
-    assert afuera.content.hard_data[0].cue_index == 1
+    guard.check(afuera)  # type: ignore[arg-type]
+    assert afuera.content.hard_data == []
 
 
 _RESUMEN_EN_INGLES = (

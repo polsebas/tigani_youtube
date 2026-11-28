@@ -29,6 +29,7 @@ class PipelineConfig(BaseModel):
     include_chapter_covers: bool = True
     include_errors: bool = False
     cache_dir: Path | None = None
+    outro_image: Path | None = None
 
 
 class StageResult(BaseModel):

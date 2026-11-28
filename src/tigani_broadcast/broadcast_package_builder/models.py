@@ -6,7 +6,7 @@ from typing import Literal, Self
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
-SlideKind = Literal["chapter_cover", "chart", "visual"]
+SlideKind = Literal["chapter_cover", "chart", "visual", "promo_outro"]
 
 
 class PackageSlide(BaseModel):

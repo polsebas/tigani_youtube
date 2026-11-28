@@ -1229,3 +1229,27 @@ def test_playbook_v2_compuestos_brecha_balanza_y_omision() -> None:
     assert _playbook_ids(broken.items) == []
     assert broken.items[0].resolution_status == "quoted_only"
     assert all(item.resolution_status != "fetch_error" for item in broken.items)
+
+
+def test_promo_outro_no_dispara_playbook() -> None:
+    chapter = _chapter(
+        _mention(1, "swap", "900 M"),
+        title="Cierre",
+        summary="La inflación y las reservas, y también el nivel uno de la comunidad.",
+    ).model_copy(update={"chapter_kind": "promo_outro"})
+    package = resolve_chapters_to_artifacts(
+        ChapterizedTranscript(chapters=[chapter]),
+        date(2025, 12, 11),
+        _ResolverFake(
+            {
+                "swap": ChartResolutionDraft(
+                    resolution_status="quoted_only",
+                    rationale="Cita del cierre.",
+                )
+            }
+        ),
+        _FetcherFake(),  # type: ignore[arg-type]
+    )
+    assert len(package.items) == 1
+    assert package.items[0].playbook_id is None
+    assert package.items[0].resolution_status == "quoted_only"

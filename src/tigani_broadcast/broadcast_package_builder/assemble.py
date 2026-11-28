@@ -5,6 +5,7 @@ from __future__ import annotations
 import shutil
 from pathlib import Path
 
+from tigani_broadcast.broadcast_package_builder.deck import render_promo_outro_html
 from tigani_broadcast.broadcast_package_builder.models import (
     BroadcastPackageManifest,
     DataSourceCredit,
@@ -21,7 +22,10 @@ KIND_PRIORITY: dict[SlideKind, int] = {
     "chapter_cover": 0,
     "chart": 1,
     "visual": 2,
+    "promo_outro": 3,
 }
+
+_OUTRO_CANDIDATES = ("outro.png", "outro.jpg", "outro.jpeg", "outro.webp")
 
 
 class PackageValidationError(ValueError):
@@ -109,6 +113,25 @@ def collect_visual_credits(assets: VisualAssetsPackage) -> list[VisualLicenseCre
     return credits
 
 
+def resolve_outro_image(explicit: Path | None = None) -> Path | None:
+    """Usa la ruta pedida o, si no hay, `assets/outro.png` / `assets/outro.jpg`."""
+    if explicit is not None:
+        path = Path(explicit)
+        if not path.is_file():
+            raise PackageValidationError(f"no existe la imagen de cierre: {path}")
+        return path
+    roots = (
+        Path.cwd() / "assets",
+        Path(__file__).resolve().parents[3] / "assets",
+    )
+    for root in roots:
+        for name in _OUTRO_CANDIDATES:
+            candidate = root / name
+            if candidate.is_file():
+                return candidate
+    return None
+
+
 def assemble_broadcast_package(
     chapters: ChapterizedTranscript,
     charts: ChartsPackage,
@@ -119,6 +142,7 @@ def assemble_broadcast_package(
     video_url: str | None = None,
     include_chapter_covers: bool = True,
     include_errors: bool = False,
+    outro_image: Path | None = None,
 ) -> BroadcastPackageManifest:
     """Valida entradas, copia activos portables y construye el manifiesto ordenado."""
     validate_package_inputs(chapters, charts, assets)
@@ -262,6 +286,51 @@ def assemble_broadcast_package(
                 item.chapter_index,
                 item.cue_index,
                 KIND_PRIORITY["visual"],
+                original_index,
+                slide,
+            )
+        )
+        original_index += 1
+
+    image_path = resolve_outro_image(outro_image)
+    copied_image_name: str | None = None
+    if image_path is not None:
+        slides_dir = output_dir / "slides"
+        slides_dir.mkdir(parents=True, exist_ok=True)
+        copied_image_name = f"outro{image_path.suffix.lower()}"
+        shutil.copy2(image_path, slides_dir / copied_image_name)
+
+    for chapter_index, chapter in enumerate(chapters.chapters):
+        if chapter.chapter_kind != "promo_outro":
+            continue
+        chapters_dir.mkdir(parents=True, exist_ok=True)
+        filename = f"ch{chapter_index:02d}_outro.html"
+        relative_image = f"../{copied_image_name}" if copied_image_name is not None else None
+        (chapters_dir / filename).write_text(
+            render_promo_outro_html(
+                chapter.start_time,
+                video_title=video_title,
+                relative_image=relative_image,
+            ),
+            encoding="utf-8",
+        )
+        slide = PackageSlide(
+            slide_index=0,
+            chapter_index=chapter_index,
+            chapter_title=chapter.title,
+            cue_index=chapter.end_cue_index,
+            timestamp=chapter.start_time,
+            kind="promo_outro",
+            status="promo_outro",
+            title="Cierre promocional",
+            relative_html_path=f"slides/chapters/{filename}",
+            source_ref=None,
+        )
+        draft_slides.append(
+            (
+                chapter_index,
+                chapter.end_cue_index,
+                KIND_PRIORITY["promo_outro"],
                 original_index,
                 slide,
             )

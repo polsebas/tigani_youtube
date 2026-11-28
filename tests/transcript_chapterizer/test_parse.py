@@ -186,6 +186,20 @@ def test_archivo_inexistente_falla_sin_linea(tmp_path: Path) -> None:
     assert str(path) in str(exc_info.value)
 
 
+def test_parsea_volcado_de_accesibilidad_de_youtube() -> None:
+    text = (
+        "0:000 secondsHola, amigos.\n"
+        "1:021 minute, 2 secondsotra, pega en el travesaño.\n"
+        "5:015 minutes, 1 second¿Sabes lo que son 3300 palos?\n"
+    )
+    cues = parse_transcript(text)
+    assert [(cue.timestamp, cue.text) for cue in cues] == [
+        ("00:00:00", "Hola, amigos."),
+        ("00:01:02", "otra, pega en el travesaño."),
+        ("00:05:01", "¿Sabes lo que son 3300 palos?"),
+    ]
+
+
 def test_una_linea_rota_no_devuelve_las_cues_anteriores() -> None:
     text = "[00:00:01] esta sí\nesto no es una cue\n"
 

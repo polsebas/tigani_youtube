@@ -171,6 +171,8 @@ def resolve_chapters_to_visual_assets(
 
     for index, subject in enumerate(subjects):
         chapter = chapters.chapters[subject.chapter_index]
+        if chapter.chapter_kind == "promo_outro":
+            continue
         filename_stem = f"ch{subject.chapter_index:02d}_cue{subject.cue_index:03d}_{index:02d}"
         try:
             plan = planner.plan(subject, chapter.title)

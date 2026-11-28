@@ -353,6 +353,46 @@ def test_resolve_fetch_error_de_provider(tmp_path: Path) -> None:
     assert "500" in (package.items[0].error_message or "")
 
 
+def test_promo_outro_no_genera_busqueda_de_imagenes(tmp_path: Path) -> None:
+    class _Boom:
+        def plan(self, *_args: object, **_kwargs: object) -> None:
+            raise AssertionError("no debe planear imágenes del cierre")
+
+        def fetch_for_plan(self, *_args: object, **_kwargs: object) -> None:
+            raise AssertionError("no debe bajar imágenes del cierre")
+
+    chapters = ChapterizedTranscript(
+        chapters=[
+            Chapter(
+                start_cue_index=0,
+                end_cue_index=1,
+                start_time="00:11:15",
+                end_time="00:12:32",
+                title="Cierre",
+                summary="Invitación a la comunidad.",
+                suggested_lower_third="Sumate",
+                chapter_kind="promo_outro",
+                visual_subjects=[
+                    VisualSubjectMention(
+                        cue_index=0,
+                        timestamp="00:11:15",
+                        subject_label="comunidad",
+                        asset_kind="conceptual_illustration",
+                        context_text="nivel uno",
+                    )
+                ],
+            )
+        ]
+    )
+    package = resolve_chapters_to_visual_assets(
+        chapters,
+        planner=_Boom(),  # type: ignore[arg-type]
+        fetcher=_Boom(),  # type: ignore[arg-type]
+        images_dir=tmp_path / "images",
+    )
+    assert package.items == []
+
+
 def test_max_retries_negativo() -> None:
     with pytest.raises(PlannerError, match="max_retries"):
         AgnoVisualQueryPlanner(_Modelo(), max_retries=-1)

@@ -47,7 +47,7 @@ def parse_transcript(text: str) -> list[Cue]:
     for line_number, line in enumerate(text.splitlines(), start=1):
         if line.strip() == "":
             continue
-        timestamp, cue_text, clock = _parse_line(line, line_number)
+        timestamp, cue_text, clock = _parse_line(_unwrap_youtube_accessibility(line), line_number)
         if previous is not None and clock < previous:
             previous_timestamp = canonical_timestamp(*previous)
             raise TranscriptFormatError(
@@ -60,6 +60,48 @@ def parse_transcript(text: str) -> list[Cue]:
     if not cues:
         raise TranscriptFormatError("la transcripción no contiene ninguna cue")
     return cues
+
+
+def _unwrap_youtube_accessibility(line: str) -> str:
+    """Saca el texto oculto de accesibilidad pegado al reloj (`1:021 minute, 2 seconds...`)."""
+    if line.startswith("["):
+        return line
+    match = re.match(
+        r"^(?P<a>\d{1,2}):(?P<b>\d{2})(?::(?P<c>\d{2}))?(?P<rest>.*)$",
+        line,
+    )
+    if match is None:
+        return line
+    if match.group("c") is not None:
+        hours = int(match.group("a"))
+        minutes = int(match.group("b"))
+        seconds = int(match.group("c"))
+    else:
+        hours = 0
+        minutes = int(match.group("a"))
+        seconds = int(match.group("b"))
+    if minutes > 59 or seconds > 59:
+        return line
+    rest = match.group("rest")
+    spoken = _spoken_duration(hours, minutes, seconds)
+    if spoken is None or not rest.startswith(spoken):
+        return line
+    text = rest[len(spoken) :].strip()
+    if not text:
+        return line
+    return f"[{canonical_timestamp(hours, minutes, seconds)}] {text}"
+
+
+def _unit(count: int, singular: str, plural: str) -> str:
+    return f"{count} {singular if count == 1 else plural}"
+
+
+def _spoken_duration(hours: int, minutes: int, seconds: int) -> str | None:
+    if hours != 0:
+        return None
+    if minutes == 0:
+        return _unit(seconds, "second", "seconds")
+    return f"{_unit(minutes, 'minute', 'minutes')}, {_unit(seconds, 'second', 'seconds')}"
 
 
 def _parse_line(line: str, line_number: int) -> tuple[str, str, tuple[int, int, int]]:

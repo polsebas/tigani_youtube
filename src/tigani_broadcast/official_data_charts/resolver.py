@@ -574,18 +574,19 @@ def resolve_chapters_to_artifacts(
                 )
             )
 
-        chapter_items.extend(
-            _playbook_artifacts_for_chapter(
-                chapter_index,
-                chapter,
-                chapter_items,
-                publish_date=publish_date,
-                resolver=resolver,
-                fetcher=fetcher,
-                used_playbook_ids=used_playbook_ids,
-                prior_series_keys=prior_series_keys,
+        if chapter.chapter_kind != "promo_outro":
+            chapter_items.extend(
+                _playbook_artifacts_for_chapter(
+                    chapter_index,
+                    chapter,
+                    chapter_items,
+                    publish_date=publish_date,
+                    resolver=resolver,
+                    fetcher=fetcher,
+                    used_playbook_ids=used_playbook_ids,
+                    prior_series_keys=prior_series_keys,
+                )
             )
-        )
         chapter_items.sort(key=_artifact_sort_key)
         for artifact in chapter_items:
             if artifact.playbook_id is not None:

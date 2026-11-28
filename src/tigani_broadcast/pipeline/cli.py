@@ -95,6 +95,14 @@ def build_parser() -> argparse.ArgumentParser:
         help="Incluye placas fetch_error en deck.html",
     )
     run.add_argument(
+        "--outro-image",
+        type=Path,
+        default=None,
+        help=(
+            "Imagen del cierre promocional. Si falta, se busca assets/outro.png o assets/outro.jpg"
+        ),
+    )
+    run.add_argument(
         "--cache-dir",
         type=Path,
         default=None,
@@ -132,6 +140,7 @@ def run_cli(
             include_chapter_covers=not bool(args.no_chapter_covers),
             include_errors=bool(args.include_errors),
             cache_dir=Path(args.cache_dir) if args.cache_dir is not None else None,
+            outro_image=Path(args.outro_image) if args.outro_image is not None else None,
         )
     except PipelineCliError as exc:
         print(exc, file=sys.stderr)

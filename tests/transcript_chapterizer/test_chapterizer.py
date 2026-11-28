@@ -16,9 +16,12 @@ from tigani_broadcast.transcript_chapterizer.chapterizer import (
     ChapterizerEngine,
     ChapterizerInputError,
     ChapterizerOutputError,
+    assemble_chapterized_transcript,
     chapterize_transcript,
     format_chapterizer_input,
     format_cue_lines,
+    is_promo_outro_text,
+    promo_outro_details,
     validate_chapter_plan,
 )
 from tigani_broadcast.transcript_chapterizer.guardrails import (
@@ -32,8 +35,10 @@ from tigani_broadcast.transcript_chapterizer.models import (
     Chapter,
     ChapterizedTranscript,
     Cue,
+    DraftChapter,
     DraftChapterBoundary,
     DraftChapterDetails,
+    DraftChapterizedTranscript,
     DraftChapterPlan,
     DraftHardDataMention,
     DraftVisualSubjectMention,
@@ -534,3 +539,53 @@ def test_el_modulo_no_importa_sdks_de_proveedores() -> None:
         if name in prefixes or name.startswith(tuple(f"{prefix}." for prefix in prefixes))
     ]
     assert offenders == []
+
+
+def test_detector_de_promo_outro_vacia_menciones() -> None:
+    texto = (
+        "Si todavía no estás en el nivel uno, sumate a la comunidad. "
+        "Unirte al nivel dos incluye MicroMBA e Iniciativa Emprendedora."
+    )
+    assert is_promo_outro_text(texto) is True
+    assert is_promo_outro_text("la inflación fue 2,5 por ciento") is False
+    assert promo_outro_details().hard_data == []
+    assert promo_outro_details().visual_subjects == []
+    assert promo_outro_details().chapter_kind == "promo_outro"
+
+    cues = [
+        Cue(cue_index=0, timestamp="00:11:15", text="nivel uno y la comunidad"),
+        Cue(cue_index=1, timestamp="00:11:52", text="cinco clases de entre 45 minutos"),
+    ]
+    draft = DraftChapterizedTranscript(
+        chapters=[
+            DraftChapter(
+                start_cue_index=0,
+                end_cue_index=1,
+                title="Cierre",
+                summary="Cierre promocional del canal, sin cifras económicas.",
+                suggested_lower_third="Sumate a la comunidad",
+                chapter_kind="promo_outro",
+            )
+        ],
+        hard_data=[
+            DraftHardDataMention(
+                cue_index=1,
+                indicator_label="clases",
+                raw_value_text="5",
+            )
+        ],
+        visual_subjects=[
+            DraftVisualSubjectMention(
+                cue_index=0,
+                subject_label="comunidad",
+                asset_kind="conceptual_illustration",
+                context_text="nivel uno",
+            )
+        ],
+    )
+    # El ensamblado respeta lo que ya vació el detector: este draft ya viene limpio.
+    limpio = draft.model_copy(update={"hard_data": [], "visual_subjects": []})
+    transcript = assemble_chapterized_transcript(limpio, cues)
+    assert transcript.chapters[0].chapter_kind == "promo_outro"
+    assert transcript.chapters[0].hard_data == []
+    assert transcript.chapters[0].visual_subjects == []
