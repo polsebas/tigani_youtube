@@ -5,14 +5,19 @@ from __future__ import annotations
 import html
 import json
 import shutil
+from collections.abc import Sequence
 from datetime import date
 from pathlib import Path
 from typing import Any
 
+from tigani_broadcast.official_data_charts.catalog import get_catalog_entry, is_valid_catalog_id
 from tigani_broadcast.official_data_charts.models import (
     ChartArtifact,
     ChartNarrative,
     ChartsPackage,
+    DataPoint,
+    PlaybookChartType,
+    SeriesData,
     SeriesMetrics,
     SeriesObservation,
 )
@@ -385,11 +390,16 @@ def _verified_body(artifact: ChartArtifact, publish_date: date) -> str:
     series = artifact.series
     metrics = artifact.metrics
     narrative = artifact.narrative
+    chart_unit = "base 100" if artifact.chart_type == "dual_base100" else series.unit
     chart_block = _echarts_chart_html(
         series.observations,
         metrics,
         narrative=narrative,
-        unit=series.unit,
+        unit=chart_unit,
+        chart_type=artifact.chart_type,
+        secondary_points=(
+            artifact.secondary_series.points if artifact.secondary_series is not None else None
+        ),
     )
     change = _format_percent(metrics.percent_change)
     period = f"{metrics.start_date.isoformat()} → {metrics.end_date.isoformat()}"
@@ -402,10 +412,11 @@ def _verified_body(artifact: ChartArtifact, publish_date: date) -> str:
     title = html.escape(_capitalize_headline(artifact.indicator_label))
     frequency_es = html.escape(_frequency_label(series.frequency))
     footer = (
-        f"{html.escape(series.source_attribution)} · "
+        f"{_source_line(artifact, series)} · "
         f"series_id={html.escape(series.series_id)} · "
         f"período {html.escape(period)}"
     )
+    note_html = _editorial_note_html(artifact)
 
     if narrative is not None:
         badge_html = _headline_badge_html(narrative)
@@ -421,6 +432,7 @@ def _verified_body(artifact: ChartArtifact, publish_date: date) -> str:
   <footer class="footer">
     {kpi_html}
     <div>{footer}</div>
+    {note_html}
     <p class="meta">Citado: {html.escape(artifact.raw_value_text)} · {corte}</p>
     {provisional}
   </footer>
@@ -444,9 +456,27 @@ def _verified_body(artifact: ChartArtifact, publish_date: date) -> str:
   </section>
   <footer class="footer">
     <div>{footer}</div>
+    {note_html}
     {provisional}
   </footer>
 """
+
+
+def _editorial_note_html(artifact: ChartArtifact) -> str:
+    if artifact.editorial_note is None or not artifact.editorial_note.strip():
+        return ""
+    return f'<p class="meta editorial-note">{html.escape(artifact.editorial_note)}</p>'
+
+
+def _source_line(artifact: ChartArtifact, series: SeriesData) -> str:
+    primary = html.escape(series.source_attribution)
+    secondary = artifact.secondary_series
+    if secondary is None:
+        return primary
+    extra = secondary.label
+    if is_valid_catalog_id(secondary.series_key):
+        extra = get_catalog_entry(secondary.series_key).source_attribution
+    return f"{primary} · {html.escape(extra)}"
 
 
 def build_echarts_option(
@@ -455,11 +485,17 @@ def build_echarts_option(
     *,
     narrative: ChartNarrative | None = None,
     unit: str = "",
+    chart_type: PlaybookChartType = "single_line",
+    secondary_points: Sequence[DataPoint] | None = None,
 ) -> dict[str, Any]:
     """Option ECharts determinista (serializable a JSON) para placas verified_series."""
     points = [(obs.obs_date, obs.value) for obs in observations if obs.value is not None]
     # El eje se deriva de los puntos; metrics queda en la firma por contrato del caller.
     del metrics
+    if chart_type == "dual_base100" and secondary_points:
+        return _dual_base100_option(observations, secondary_points)
+    if chart_type == "bar_diverging":
+        return _bar_diverging_option(observations)
     if not points:
         return {
             "animation": False,
@@ -559,18 +595,259 @@ def build_echarts_option(
     }
 
 
+def _dual_base100_option(
+    observations: list[SeriesObservation],
+    secondary_points: Sequence[DataPoint],
+) -> dict[str, Any]:
+    secondary_by_date = {point.obs_date: float(point.value) for point in secondary_points}
+    aligned = [
+        (obs.obs_date, float(obs.value), secondary_by_date[obs.obs_date])
+        for obs in observations
+        if obs.value is not None and obs.obs_date in secondary_by_date
+    ]
+    if len(aligned) < 2:
+        return {
+            "animation": False,
+            "title": {
+                "text": "Sin datos",
+                "left": "center",
+                "top": "middle",
+                "textStyle": {"color": "#9db0c3", "fontSize": 18},
+            },
+        }
+    categories = _category_labels([row[0] for row in aligned])
+    primary_values = [row[1] for row in aligned]
+    secondary_values = [row[2] for row in aligned]
+    show_all = len(aligned) <= _DENSE_LABEL_MAX
+    y_min, y_max = _y_axis_bounds([*primary_values, *secondary_values, 100.0])
+    return {
+        "animation": True,
+        "animationDuration": 750,
+        "animationEasing": "cubicOut",
+        "legend": {
+            "show": True,
+            "top": 0,
+            "textStyle": {"color": "#f4f7fb", "fontSize": 14},
+        },
+        "grid": {"left": 16, "right": 28, "top": 72, "bottom": 34, "containLabel": True},
+        "tooltip": {"trigger": "axis", "show": False},
+        "xAxis": {
+            "type": "category",
+            "boundaryGap": False,
+            "data": categories,
+            "axisLine": {"lineStyle": {"color": "#2b3b4d"}},
+            "axisTick": {"show": False},
+            "axisLabel": {
+                "show": True,
+                "color": "#c8d6e5",
+                "fontSize": 15,
+                "interval": 0 if show_all else "auto",
+            },
+        },
+        "yAxis": {
+            "type": "value",
+            "scale": True,
+            "min": y_min,
+            "max": y_max,
+            "axisLine": {"show": False},
+            "axisTick": {"show": False},
+            "axisLabel": {
+                "color": "#c8d6e5",
+                "fontSize": 14,
+                "formatter": "__Y_FORMATTER__",
+            },
+            "splitLine": {
+                "show": True,
+                "lineStyle": {"type": "dashed", "color": "#243242", "width": 1},
+            },
+        },
+        "series": [
+            _indexed_line_series(
+                "IPC",
+                primary_values,
+                color="#3db8a8",
+                show_all=show_all,
+                with_base_line=True,
+            ),
+            _indexed_line_series(
+                "Dólar mayorista",
+                secondary_values,
+                color="#e8b84a",
+                show_all=show_all,
+                with_base_line=False,
+            ),
+        ],
+        "_tiganiUnit": "base 100",
+    }
+
+
+def _indexed_line_series(
+    name: str,
+    values: list[float],
+    *,
+    color: str,
+    show_all: bool,
+    with_base_line: bool,
+) -> dict[str, Any]:
+    last = len(values) - 1
+    data = [
+        {
+            "value": value,
+            "label": {"show": show_all or index == last, "position": "top"},
+        }
+        for index, value in enumerate(values)
+    ]
+    payload: dict[str, Any] = {
+        "name": name,
+        "type": "line",
+        "smooth": 0.2,
+        "symbol": "circle",
+        "symbolSize": 9,
+        "data": data,
+        "lineStyle": {"width": 3, "color": color},
+        "itemStyle": {"color": color},
+        "label": {
+            "show": True,
+            "position": "top",
+            "fontSize": 15,
+            "fontWeight": 600,
+            "color": "#f4f7fb",
+            "formatter": "__LABEL_FORMATTER__",
+        },
+    }
+    if with_base_line:
+        payload["markLine"] = {
+            "silent": True,
+            "symbol": "none",
+            "lineStyle": {"type": "dashed", "color": "#9db0c3", "width": 1},
+            "data": [
+                {
+                    "yAxis": 100,
+                    "label": {"formatter": "Base 100", "color": "#c8d6e5", "fontSize": 12},
+                }
+            ],
+        }
+    return payload
+
+
+def _bar_diverging_option(observations: list[SeriesObservation]) -> dict[str, Any]:
+    points = [(obs.obs_date, float(obs.value)) for obs in observations if obs.value is not None]
+    if not points:
+        return {
+            "animation": False,
+            "title": {
+                "text": "Sin datos",
+                "left": "center",
+                "top": "middle",
+                "textStyle": {"color": "#9db0c3", "fontSize": 18},
+            },
+        }
+    categories = _category_labels([item[0] for item in points])
+    values = [item[1] for item in points]
+    show_all = len(values) <= _DENSE_LABEL_MAX
+    y_min, y_max = _diverging_y_bounds(values)
+    data = []
+    for value in values:
+        positive = value >= 0
+        data.append(
+            {
+                "value": value,
+                "itemStyle": {"color": "#3db8a8" if positive else "#e57373"},
+                "label": {
+                    "show": True,
+                    "position": "top" if positive else "bottom",
+                    "color": "#f4f7fb",
+                    "fontSize": 15,
+                    "fontWeight": 600,
+                },
+            }
+        )
+    return {
+        "animation": True,
+        "animationDuration": 750,
+        "animationEasing": "cubicOut",
+        "grid": {"left": 16, "right": 28, "top": 44, "bottom": 34, "containLabel": True},
+        "tooltip": {"trigger": "axis", "show": False},
+        "xAxis": {
+            "type": "category",
+            "data": categories,
+            "axisLine": {"lineStyle": {"color": "#2b3b4d"}},
+            "axisTick": {"show": False},
+            "axisLabel": {
+                "show": True,
+                "color": "#c8d6e5",
+                "fontSize": 15,
+                "interval": 0 if show_all else "auto",
+            },
+        },
+        "yAxis": {
+            "type": "value",
+            "min": y_min,
+            "max": y_max,
+            "axisLine": {"show": False},
+            "axisTick": {"show": False},
+            "axisLabel": {
+                "color": "#c8d6e5",
+                "fontSize": 14,
+                "formatter": "__Y_FORMATTER__",
+            },
+            "splitLine": {
+                "show": True,
+                "lineStyle": {"type": "dashed", "color": "#243242", "width": 1},
+            },
+        },
+        "series": [
+            {
+                "type": "bar",
+                "data": data,
+                "label": {
+                    "show": True,
+                    "fontSize": 15,
+                    "fontWeight": 600,
+                    "color": "#f4f7fb",
+                    "formatter": "__LABEL_FORMATTER__",
+                },
+                "markLine": {
+                    "silent": True,
+                    "symbol": "none",
+                    "lineStyle": {"color": "#c8d6e5", "width": 1.5},
+                    "data": [{"yAxis": 0, "label": {"show": False}}],
+                },
+            }
+        ],
+        "_tiganiUnit": "%",
+    }
+
+
+def _diverging_y_bounds(values: list[float]) -> tuple[float, float]:
+    """Incluye el cero y deja aire por encima del máximo y por debajo del mínimo."""
+    span = max(max(values) - min(values), 0.5)
+    pad = span * 0.18
+    y_min = round(min(values) - pad, 1)
+    y_max = round(max(values) + pad, 1)
+    if y_min >= 0:
+        y_min = round(-max(pad, 0.5), 1)
+    if y_max <= 0:
+        y_max = round(max(pad, 0.5), 1)
+    return float(y_min), float(y_max)
+
+
 def _echarts_chart_html(
     observations: list[SeriesObservation],
     metrics: SeriesMetrics,
     *,
     narrative: ChartNarrative | None,
     unit: str,
+    chart_type: PlaybookChartType = "single_line",
+    secondary_points: Sequence[DataPoint] | None = None,
 ) -> str:
     option = build_echarts_option(
         observations,
         metrics,
         narrative=narrative,
         unit=unit,
+        chart_type=chart_type,
+        secondary_points=secondary_points,
     )
     option_json = json.dumps(option, ensure_ascii=False)
     option_json = option_json.replace("</", "<\\/")
@@ -599,19 +876,23 @@ def _echarts_chart_html(
   if (option.yAxis && option.yAxis.axisLabel) {{
     option.yAxis.axisLabel.formatter = function (value) {{ return formatValue(value); }};
   }}
-  if (option.series && option.series[0] && option.series[0].label && option.series[0].label.show) {{
-    option.series[0].label.formatter = function (params) {{ return formatValue(params.value); }};
-  }}
+  (option.series || []).forEach(function (serie) {{
+    if (serie && serie.label) {{
+      serie.label.formatter = function (params) {{ return formatValue(params.value); }};
+    }}
+  }});
   const el = document.getElementById("chart");
   const chart = echarts.init(el, null, {{ renderer: "canvas" }});
   chart.setOption(option);
   const wrap = (el && el.closest) ? el.closest(".chart-wrap") : el;
   const axisX = option.xAxis && option.xAxis.axisLabel;
   const axisY = option.yAxis && option.yAxis.axisLabel;
-  const pointLabel = option.series && option.series[0] && option.series[0].label;
+  const seriesLabels = (option.series || []).map(function (serie) {{
+    const label = serie && serie.label;
+    return (label && label.fontSize) || 15;
+  }});
   const baseX = (axisX && axisX.fontSize) || 15;
   const baseY = (axisY && axisY.fontSize) || 14;
-  const baseLabel = (pointLabel && pointLabel.fontSize) || 15;
   let scaleFrame = 0;
   function fitChart() {{
     const container = wrap || el;
@@ -625,9 +906,10 @@ def _echarts_chart_html(
         xAxis: {{ axisLabel: {{ fontSize: Math.round(baseX * scale) }} }},
         yAxis: {{ axisLabel: {{ fontSize: Math.round(baseY * scale) }} }}
       }};
-      const showLabels = pointLabel && pointLabel.show;
-      if (showLabels) {{
-        patch.series = [{{ label: {{ fontSize: Math.round(baseLabel * scale) }} }}];
+      if (seriesLabels.length) {{
+        patch.series = seriesLabels.map(function (baseLabel) {{
+          return {{ label: {{ fontSize: Math.round(baseLabel * scale) }} }};
+        }});
       }}
       chart.setOption(patch);
     }});

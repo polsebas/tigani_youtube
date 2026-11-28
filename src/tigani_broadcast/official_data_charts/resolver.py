@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import logging
 from collections.abc import Sequence
 from datetime import date, timedelta
 from types import SimpleNamespace
@@ -35,18 +36,31 @@ from tigani_broadcast.official_data_charts.models import (
     ChartNarrative,
     ChartResolutionDraft,
     ChartsPackage,
+    DataPoint,
     NarrativeMode,
+    PlaybookId,
+    SecondarySeriesData,
+    SeriesData,
     SeriesFrequency,
     SeriesObservation,
+)
+from tigani_broadcast.official_data_charts.playbook import (
+    PLAYBOOK_CATALOG,
+    build_dual_base100,
+    match_playbook_fallback,
 )
 from tigani_broadcast.official_data_charts.providers.base import ProviderError
 from tigani_broadcast.official_data_charts.providers.fetcher import SeriesFetcher
 from tigani_broadcast.transcript_chapterizer.models import (
+    Chapter,
     ChapterizedTranscript,
     HardDataMention,
 )
 
 _NULLISH_CATALOG_IDS = frozenset({"", "none", "null", "quoted_only"})
+_LOGGER = logging.getLogger(__name__)
+_PLAYBOOK_MAX_ITEMS = 2
+_PlaybookPick = tuple[PlaybookId, int, str]
 # Fetch mínimo: 13 meses (~400d) para YTD/YoY; 48 meses para comparación de gestiones.
 _TREND_FETCH_DAYS = 400
 _TERM_COMPARISON_FETCH_DAYS = 1461  # ≈ 48 meses
@@ -107,6 +121,37 @@ class _LLMResolutionPayload(BaseModel):
     rationale: str = Field(min_length=1, max_length=240)
 
 
+class _PlaybookPickPayload(BaseModel):
+    """Un gráfico de playbook elegido por el LLM, sin números calculados."""
+
+    model_config = ConfigDict(extra="forbid", strict=True, frozen=True)
+
+    playbook_id: str = Field(min_length=1, max_length=40)
+    cue_index: int = Field(ge=0)
+    rationale: str = Field(min_length=1, max_length=240)
+
+
+class _PlaybookSelectionPayload(BaseModel):
+    """Hasta dos gráficos de Playbook v1 para la tesis del capítulo."""
+
+    model_config = ConfigDict(extra="forbid", strict=True, frozen=True)
+
+    items: list[_PlaybookPickPayload] = Field(default_factory=list, max_length=2)
+
+
+_PLAYBOOK_INSTRUCTIONS = "\n".join(
+    (
+        "Elegí hasta 2 gráficos del Playbook v1 que iluminen la tesis del capítulo.",
+        "Devolvé items con playbook_id exacto, cue_index de la mención más afín y rationale.",
+        "playbook_id solo puede ser: ipc_trend, ipc_vs_dolar_base100,",
+        "reservas_bcra_regimes, emae_activity, riesgo_pais_trend.",
+        "No calcules cifras. Si ningún gráfico aporta, devolvé items=[].",
+        "ipc_vs_dolar_base100 puede convivir con un IPC mensual ya citado.",
+        "No repitas ipc_trend si el IPC mensual ya está resuelto en el capítulo.",
+    )
+)
+
+
 class ResolutionValidationError(ValueError):
     """El agente o un guardrail rechazó la resolución. Fail-closed por mención."""
 
@@ -145,6 +190,30 @@ class AgnoMentionResolver:
             markdown=False,
             telemetry=False,
         )
+        self.playbook_agent = Agent(
+            model=model,
+            output_schema=_PlaybookSelectionPayload,
+            instructions=_PLAYBOOK_INSTRUCTIONS,
+            expected_output="Objeto con items (máximo 2) de playbook_id, cue_index y rationale.",
+            markdown=False,
+            telemetry=False,
+        )
+
+    def select_playbooks(
+        self,
+        chapter_text: str,
+        mentions: Sequence[HardDataMention],
+        publish_date: date,
+    ) -> list[_PlaybookPick]:
+        """Pide hasta 2 playbook_id. Si el parseo falla, el caller usa el fallback."""
+        prompt = _format_playbook_prompt(chapter_text, mentions, publish_date)
+        content = _checked_content(self.playbook_agent, prompt, ())
+        if not isinstance(content, _PlaybookSelectionPayload):
+            received = type(content).__name__
+            raise ResolutionValidationError(
+                f"el agente no devolvió un _PlaybookSelectionPayload (recibido: {received})"
+            )
+        return _validated_playbook_picks(content)
 
     def resolve(
         self,
@@ -393,11 +462,13 @@ def resolve_chapters_to_artifacts(
 ) -> ChartsPackage:
     """
     Recorre menciones en orden. quoted_only / verified_series / fetch_error por mención.
-    Fallos de resolución o de fetch no abortan el resto del video.
+    Después agrega hasta 2 gráficos de Playbook v1 por capítulo, sin borrar citas.
+    Fallos de resolución, de fetch o de un playbook no abortan el resto del video.
     """
     items: list[ChartArtifact] = []
     for chapter_index, chapter in enumerate(chapters.chapters):
         chapter_context = f"{chapter.title}. {chapter.summary}".strip()
+        chapter_items: list[ChartArtifact] = []
         for mention in chapter.hard_data:
             draft: ChartResolutionDraft | None = None
             resolve_error: str | None = None
@@ -426,7 +497,7 @@ def resolve_chapters_to_artifacts(
                     rationale=rationale,
                 )
             elif draft is None:
-                items.append(
+                chapter_items.append(
                     ChartArtifact(
                         chapter_index=chapter_index,
                         cue_index=mention.cue_index,
@@ -441,7 +512,7 @@ def resolve_chapters_to_artifacts(
                 )
                 continue
             elif draft.resolution_status == "quoted_only":
-                items.append(_quoted_artifact(chapter_index, mention, draft.rationale))
+                chapter_items.append(_quoted_artifact(chapter_index, mention, draft.rationale))
                 continue
 
             assert draft.catalog_id is not None
@@ -452,7 +523,7 @@ def resolve_chapters_to_artifacts(
                 series = fetcher.fetch(entry, draft.start_date, draft.end_date)
                 metrics = compute_series_metrics(series.observations)
             except (ProviderError, MetricsCalculationError) as exc:
-                items.append(
+                chapter_items.append(
                     ChartArtifact(
                         chapter_index=chapter_index,
                         cue_index=mention.cue_index,
@@ -475,7 +546,7 @@ def resolve_chapters_to_artifacts(
                 unit=series.unit,
                 frequency=series.frequency,
             )
-            items.append(
+            chapter_items.append(
                 ChartArtifact(
                     chapter_index=chapter_index,
                     cue_index=mention.cue_index,
@@ -490,6 +561,19 @@ def resolve_chapters_to_artifacts(
                     narrative=narrative,
                 )
             )
+
+        chapter_items.extend(
+            _playbook_artifacts_for_chapter(
+                chapter_index,
+                chapter,
+                chapter_items,
+                publish_date=publish_date,
+                resolver=resolver,
+                fetcher=fetcher,
+            )
+        )
+        chapter_items.sort(key=_artifact_sort_key)
+        items.extend(chapter_items)
 
     return ChartsPackage(
         publish_date=publish_date,
@@ -600,6 +684,370 @@ def _run_guardrails(draft: ChartResolutionDraft, guards: Sequence[object]) -> No
             guard.check(run_output)  # type: ignore[attr-defined]
         except OutputCheckError as exc:
             raise ResolutionValidationError(str(exc)) from exc
+
+
+def _artifact_sort_key(artifact: ChartArtifact) -> tuple[int, int]:
+    """La cita del cue queda antes que el gráfico de playbook anclado al mismo cue."""
+    return (artifact.cue_index, 1 if artifact.playbook_id is not None else 0)
+
+
+def _playbook_artifacts_for_chapter(
+    chapter_index: int,
+    chapter: Chapter,
+    mention_items: Sequence[ChartArtifact],
+    *,
+    publish_date: date,
+    resolver: MentionResolverEngine,
+    fetcher: SeriesFetcher,
+) -> list[ChartArtifact]:
+    existing = _existing_series_keys(mention_items)
+    chapter_text = _chapter_playbook_text(chapter)
+    picks = _select_playbook_picks(
+        resolver,
+        chapter,
+        chapter_text,
+        existing,
+        publish_date,
+    )
+    artifacts: list[ChartArtifact] = []
+    emitted: set[PlaybookId] = set()
+    for playbook_id, cue_index, rationale in picks:
+        if len(artifacts) >= _PLAYBOOK_MAX_ITEMS:
+            break
+        if playbook_id in emitted or not _playbook_allowed(playbook_id, existing, emitted):
+            continue
+        cue_index, timestamp = _resolve_playbook_anchor(chapter, playbook_id, cue_index)
+        artifact = _build_playbook_artifact(
+            chapter_index,
+            cue_index,
+            timestamp,
+            playbook_id,
+            rationale,
+            publish_date=publish_date,
+            fetcher=fetcher,
+        )
+        if artifact is None:
+            continue
+        emitted.add(playbook_id)
+        artifacts.append(artifact)
+    return artifacts
+
+
+def _select_playbook_picks(
+    resolver: MentionResolverEngine,
+    chapter: Chapter,
+    chapter_text: str,
+    existing_series_keys: set[str],
+    publish_date: date,
+) -> list[_PlaybookPick]:
+    selector = getattr(resolver, "select_playbooks", None)
+    picks: list[_PlaybookPick] = []
+    if callable(selector):
+        try:
+            raw = selector(chapter_text, list(chapter.hard_data), publish_date)
+            picks = _filter_playbook_picks(raw, existing_series_keys)
+        except (ResolutionValidationError, ValidationError, TypeError, ValueError) as exc:
+            _LOGGER.info("playbook LLM no usable, se usa el fallback: %s", exc)
+            picks = []
+    if picks:
+        return picks[:_PLAYBOOK_MAX_ITEMS]
+    fallback_ids = match_playbook_fallback(
+        chapter_text,
+        existing_series_keys=existing_series_keys,
+        max_items=_PLAYBOOK_MAX_ITEMS,
+    )
+    anchored: list[_PlaybookPick] = []
+    for playbook_id in fallback_ids:
+        cue_index, _timestamp = _resolve_playbook_anchor(chapter, playbook_id, None)
+        anchored.append((playbook_id, cue_index, "Match determinista de playbook."))
+    return _filter_playbook_picks(anchored, existing_series_keys)
+
+
+def _filter_playbook_picks(
+    raw: object,
+    existing_series_keys: set[str],
+) -> list[_PlaybookPick]:
+    if not isinstance(raw, list):
+        return []
+    chosen: list[_PlaybookPick] = []
+    emitted: set[PlaybookId] = set()
+    for item in raw:
+        parsed = _coerce_playbook_pick(item)
+        if parsed is None:
+            continue
+        playbook_id, cue_index, rationale = parsed
+        if not _playbook_allowed(playbook_id, existing_series_keys, emitted):
+            continue
+        emitted.add(playbook_id)
+        chosen.append((playbook_id, cue_index, rationale))
+        if len(chosen) >= _PLAYBOOK_MAX_ITEMS:
+            break
+    return chosen
+
+
+def _coerce_playbook_pick(item: object) -> _PlaybookPick | None:
+    if isinstance(item, tuple) and len(item) == 3:
+        playbook_id, cue_index, rationale = item
+    else:
+        return None
+    if not isinstance(playbook_id, str) or playbook_id not in PLAYBOOK_CATALOG:
+        return None
+    if not isinstance(cue_index, int) or isinstance(cue_index, bool) or cue_index < 0:
+        return None
+    if not isinstance(rationale, str) or not rationale.strip():
+        return None
+    return playbook_id, cue_index, rationale.strip()  # type: ignore[return-value]
+
+
+def _playbook_allowed(
+    playbook_id: PlaybookId,
+    existing_series_keys: set[str],
+    emitted: set[PlaybookId],
+) -> bool:
+    if playbook_id in emitted or playbook_id not in PLAYBOOK_CATALOG:
+        return False
+    spec = PLAYBOOK_CATALOG[playbook_id]
+    if playbook_id == "ipc_vs_dolar_base100":
+        return True
+    if spec.chart_type in {"single_line", "bar_diverging"}:
+        return spec.series_keys[0] not in existing_series_keys
+    return spec.series_keys[0] not in existing_series_keys
+
+
+def _validated_playbook_picks(payload: _PlaybookSelectionPayload) -> list[_PlaybookPick]:
+    picks: list[_PlaybookPick] = []
+    for item in payload.items:
+        if item.playbook_id not in PLAYBOOK_CATALOG:
+            continue
+        picks.append((item.playbook_id, item.cue_index, item.rationale))  # type: ignore[arg-type]
+    return picks
+
+
+def _format_playbook_prompt(
+    chapter_text: str,
+    mentions: Sequence[HardDataMention],
+    publish_date: date,
+) -> str:
+    catalog_lines = [
+        f"- {spec.playbook_id} | {spec.chart_type} | {spec.title}"
+        for spec in PLAYBOOK_CATALOG.values()
+    ]
+    mention_lines = [
+        f"- cue_index={mention.cue_index} label={mention.indicator_label!r} "
+        f"raw={mention.raw_value_text!r}"
+        for mention in mentions
+    ] or ["- sin menciones"]
+    return "\n".join(
+        (
+            f"publish_date: {publish_date.isoformat()}",
+            f"chapter_text: {chapter_text}",
+            "menciones:",
+            *mention_lines,
+            "playbook:",
+            *catalog_lines,
+        )
+    )
+
+
+def _chapter_playbook_text(chapter: Chapter) -> str:
+    parts = [chapter.title, chapter.summary]
+    for mention in chapter.hard_data:
+        parts.append(mention.indicator_label)
+        parts.append(mention.raw_value_text)
+        if mention.time_reference:
+            parts.append(mention.time_reference)
+    return ". ".join(part.strip() for part in parts if part and part.strip())
+
+
+def _existing_series_keys(items: Sequence[ChartArtifact]) -> set[str]:
+    keys: set[str] = set()
+    for artifact in items:
+        if (
+            artifact.playbook_id is None
+            and artifact.resolution_status == "verified_series"
+            and artifact.series is not None
+        ):
+            keys.add(artifact.series.catalog_id)
+    return keys
+
+
+_PLAYBOOK_AFFINITY: dict[PlaybookId, tuple[str, ...]] = {
+    "ipc_vs_dolar_base100": (
+        "dolar",
+        "producto",
+        "servicio",
+        "precio",
+        "atraso",
+        "competitividad",
+    ),
+    "reservas_bcra_regimes": ("reserva", "swap", "banco central"),
+    "riesgo_pais_trend": ("riesgo", "embi", "bono", "tasa", "deuda", "vencimiento"),
+    "emae_activity": ("emae", "actividad", "recesion", "pbi"),
+    "ipc_trend": ("inflacion", "ipc"),
+}
+
+
+def _resolve_playbook_anchor(
+    chapter: Chapter,
+    playbook_id: PlaybookId,
+    requested_cue: int | None,
+) -> tuple[int, str]:
+    if requested_cue is not None:
+        for mention in chapter.hard_data:
+            if mention.cue_index == requested_cue:
+                return mention.cue_index, mention.timestamp
+        if chapter.start_cue_index <= requested_cue <= chapter.end_cue_index:
+            return requested_cue, chapter.end_time
+    tokens = _PLAYBOOK_AFFINITY.get(playbook_id, ())
+    best: HardDataMention | None = None
+    best_score = 0
+    for mention in chapter.hard_data:
+        blob = normalize_label(f"{mention.indicator_label} {mention.raw_value_text}")
+        score = sum(1 for token in tokens if token in blob)
+        if score > best_score:
+            best = mention
+            best_score = score
+    if best is not None:
+        return best.cue_index, best.timestamp
+    if chapter.hard_data:
+        last = chapter.hard_data[-1]
+        return last.cue_index, last.timestamp
+    return chapter.end_cue_index, chapter.end_time
+
+
+def _build_playbook_artifact(
+    chapter_index: int,
+    cue_index: int,
+    timestamp: str,
+    playbook_id: PlaybookId,
+    rationale: str,
+    *,
+    publish_date: date,
+    fetcher: SeriesFetcher,
+) -> ChartArtifact | None:
+    spec = PLAYBOOK_CATALOG[playbook_id]
+    try:
+        if playbook_id == "ipc_vs_dolar_base100":
+            return _build_dual_playbook_artifact(
+                chapter_index,
+                cue_index,
+                timestamp,
+                rationale,
+                publish_date=publish_date,
+                fetcher=fetcher,
+            )
+        entry = get_catalog_entry(spec.series_keys[0])
+        start = _fetch_start(publish_date, spec.default_window_months)
+        series = fetcher.fetch(entry, start, publish_date)
+        metrics = compute_series_metrics(series.observations)
+        mode: NarrativeMode = (
+            "term_comparison" if playbook_id == "reservas_bcra_regimes" else "trend_with_callout"
+        )
+        narrative = _safe_chart_narrative(
+            series.observations,
+            entry=entry,
+            mode=mode,
+            publish_date=publish_date,
+            unit=series.unit,
+            frequency=series.frequency,
+        )
+        if narrative is None:
+            _LOGGER.info("playbook %s omitido: narrativa vacía", playbook_id)
+            return None
+        latest = series.observations[-1].value if series.observations else None
+        raw_value = f"{latest}" if latest is not None else spec.title
+        return ChartArtifact(
+            chapter_index=chapter_index,
+            cue_index=cue_index,
+            timestamp=timestamp,
+            indicator_label=spec.title,
+            raw_value_text=raw_value,
+            resolution_status="verified_series",
+            rationale=rationale[:240],
+            series=series,
+            metrics=metrics,
+            narrative=narrative,
+            playbook_id=playbook_id,
+            chart_type=spec.chart_type,
+            editorial_note=spec.editorial_note,
+        )
+    except (ProviderError, MetricsCalculationError, ValueError, KeyError) as exc:
+        _LOGGER.info("playbook %s omitido: %s", playbook_id, exc)
+        return None
+
+
+def _build_dual_playbook_artifact(
+    chapter_index: int,
+    cue_index: int,
+    timestamp: str,
+    rationale: str,
+    *,
+    publish_date: date,
+    fetcher: SeriesFetcher,
+) -> ChartArtifact:
+    spec = PLAYBOOK_CATALOG["ipc_vs_dolar_base100"]
+    ipc_entry = get_catalog_entry(spec.series_keys[0])
+    fx_entry = get_catalog_entry(spec.series_keys[1])
+    start = _fetch_start(publish_date, spec.fetch_window_months)
+    ipc_series = fetcher.fetch(ipc_entry, start, publish_date)
+    fx_series = fetcher.fetch(fx_entry, start, publish_date)
+    ipc_index, fx_index, narrative = build_dual_base100(
+        _series_points(ipc_series),
+        _series_points(fx_series),
+        publish_date=publish_date,
+        max_months=spec.default_window_months,
+    )
+    indexed = ipc_series.model_copy(
+        update={
+            "unit": "base 100",
+            "frequency": "monthly",
+            "observations": [
+                SeriesObservation(obs_date=point.obs_date, value=point.value) for point in ipc_index
+            ],
+        }
+    )
+    metrics = compute_series_metrics(indexed.observations)
+    badge = narrative.headline_badge or "Base 100"
+    return ChartArtifact(
+        chapter_index=chapter_index,
+        cue_index=cue_index,
+        timestamp=timestamp,
+        indicator_label=spec.title,
+        raw_value_text=badge,
+        resolution_status="verified_series",
+        rationale=rationale[:240],
+        series=indexed,
+        metrics=metrics,
+        narrative=narrative,
+        playbook_id="ipc_vs_dolar_base100",
+        chart_type="dual_base100",
+        secondary_series=SecondarySeriesData(
+            label="Dólar mayorista",
+            series_key=fx_series.catalog_id,
+            provider=fx_series.provider,
+            series_id=fx_series.series_id,
+            unit="base 100",
+            points=fx_index,
+        ),
+        editorial_note=spec.editorial_note,
+    )
+
+
+def _series_points(series: SeriesData) -> list[DataPoint]:
+    return [
+        DataPoint(obs_date=obs.obs_date, value=obs.value)
+        for obs in series.observations
+        if obs.value is not None
+    ]
+
+
+def _fetch_start(publish_date: date, months: int) -> date:
+    """Primer día del mes que abre una ventana inclusiva de `months` meses."""
+    if months < 1:
+        raise ValueError("la ventana de fetch tiene que ser de al menos 1 mes")
+    month_index = publish_date.year * 12 + (publish_date.month - 1) - (months - 1)
+    year, month0 = divmod(month_index, 12)
+    return date(year, month0 + 1, 1)
 
 
 def _quoted_artifact(

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from datetime import date, timedelta
+from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
@@ -15,6 +16,7 @@ from tigani_broadcast.official_data_charts.models import (
     SeriesObservation,
 )
 from tigani_broadcast.official_data_charts.providers.base import ProviderError
+from tigani_broadcast.official_data_charts.render import write_charts_package
 from tigani_broadcast.official_data_charts.resolver import (
     RESOLVER_EXPECTED_OUTPUT,
     RESOLVER_INSTRUCTIONS,
@@ -22,6 +24,8 @@ from tigani_broadcast.official_data_charts.resolver import (
     AgnoMentionResolver,
     ResolutionValidationError,
     _LLMResolutionPayload,
+    _PlaybookPickPayload,
+    _PlaybookSelectionPayload,
     draft_from_llm_payload,
     fallback_match_series_key,
     format_resolver_prompt,
@@ -805,3 +809,216 @@ def test_regresion_inflacion_llm_elige_ipc_interanual(
     assert artifact.series is not None
     assert artifact.series.catalog_id == "ar_indec_ipc_mensual"
     assert artifact.narrative is not None
+
+
+def _fx_series() -> SeriesData:
+    return SeriesData(
+        catalog_id="ar_bcra_dolar_mayorista",
+        provider="bcra",
+        source_tier="official_primary",
+        series_id="4",
+        source_url="https://example.test/dolar",
+        source_attribution="Fuente: BCRA — Estadísticas Monetarias v4.0",
+        unit="ARS por USD",
+        frequency="daily",
+        observations=[
+            SeriesObservation(obs_date=date(2025, 10, 31), value=1000.0),
+            SeriesObservation(obs_date=date(2025, 11, 28), value=1100.0),
+        ],
+    )
+
+
+def _reservas_series() -> SeriesData:
+    return SeriesData(
+        catalog_id="ar_bcra_reservas_brutas",
+        provider="bcra",
+        source_tier="official_primary",
+        series_id="1",
+        source_url="https://example.test/reservas",
+        source_attribution="Fuente: BCRA — Estadísticas Monetarias v4.0",
+        unit="millones de USD",
+        frequency="daily",
+        observations=[
+            SeriesObservation(obs_date=date(2022, 6, 1), value=40_000.0),
+            SeriesObservation(obs_date=date(2025, 6, 1), value=28_000.0),
+        ],
+    )
+
+
+def _playbook_ids(items: list[object]) -> list[str]:
+    found: list[str] = []
+    for item in items:
+        playbook_id = getattr(item, "playbook_id", None)
+        if isinstance(playbook_id, str):
+            found.append(playbook_id)
+    return found
+
+
+def test_playbook_llm_convive_con_quoted_y_no_duplica_ipc(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    _AgentDoble.creados.clear()
+    monkeypatch.setattr(
+        "tigani_broadcast.official_data_charts.resolver.Agent",
+        _AgentDoble,
+    )
+    resolver = AgnoMentionResolver(_Modelo(), max_retries=0)
+    mention_agent = _AgentDoble.creados[0]
+    playbook_agent = _AgentDoble.creados[1]
+    mention_agent.contents = [
+        _LLMResolutionPayload(
+            catalog_id="ar_indec_ipc_mensual",
+            narrative_mode="trend_with_callout",
+            rationale="IPC mensual.",
+        ),
+        _LLMResolutionPayload(
+            catalog_id=None,
+            rationale="Cita de productos en dólares.",
+        ),
+    ]
+    playbook_agent.content = _PlaybookSelectionPayload(
+        items=[
+            _PlaybookPickPayload(
+                playbook_id="ipc_vs_dolar_base100",
+                cue_index=2,
+                rationale="Atraso cambiario del tramo.",
+            ),
+            _PlaybookPickPayload(
+                playbook_id="ipc_trend",
+                cue_index=1,
+                rationale="No debería duplicar el IPC.",
+            ),
+        ]
+    )
+    chapter = _chapter(
+        _mention(1, "índice de inflación", "2,2%"),
+        _mention(2, "productos y servicios en dólares", "55%"),
+        title="Precios en dólares",
+        summary="El IPC ya se citó y los productos están caros en dólares.",
+    )
+    package = resolve_chapters_to_artifacts(
+        ChapterizedTranscript(chapters=[chapter]),
+        date(2025, 12, 11),
+        resolver,
+        _FetcherFake(  # type: ignore[arg-type]
+            {
+                "ar_indec_ipc_mensual": _ipc_series(),
+                "ar_bcra_dolar_mayorista": _fx_series(),
+            }
+        ),
+    )
+    assert [item.resolution_status for item in package.items] == [
+        "verified_series",
+        "quoted_only",
+        "verified_series",
+    ]
+    assert package.items[1].indicator_label == "productos y servicios en dólares"
+    assert package.items[1].playbook_id is None
+    dual = package.items[2]
+    assert dual.playbook_id == "ipc_vs_dolar_base100"
+    assert dual.chart_type == "dual_base100"
+    assert dual.cue_index == 2
+    assert dual.series is not None
+    assert dual.series.catalog_id == "ar_indec_ipc_mensual"
+    assert dual.secondary_series is not None
+    assert dual.secondary_series.series_key == "ar_bcra_dolar_mayorista"
+    assert dual.narrative is not None
+    assert dual.editorial_note is not None
+    assert "ipc_trend" not in _playbook_ids(package.items)
+    written = write_charts_package(package, tmp_path / "charts.json", tmp_path / "charts")
+    names = [Path(item.html_path or "").name for item in written.items]
+    assert len(names) == len(set(names))
+    assert names[1].startswith("ch00_cue002_")
+    assert names[2].startswith("ch00_cue002_")
+    assert names[1] != names[2]
+
+
+def test_playbook_fallback_cuando_el_llm_falla(monkeypatch: pytest.MonkeyPatch) -> None:
+    _AgentDoble.creados.clear()
+    monkeypatch.setattr(
+        "tigani_broadcast.official_data_charts.resolver.Agent",
+        _AgentDoble,
+    )
+    resolver = AgnoMentionResolver(_Modelo(), max_retries=0)
+    _AgentDoble.creados[0].content = _LLMResolutionPayload(
+        catalog_id=None,
+        rationale="Sin serie para la cita.",
+    )
+    _AgentDoble.creados[1].content = {"items": "no es una lista"}
+    chapter = _chapter(
+        _mention(4, "reservas netas", "negativas"),
+        title="Reservas",
+        summary="Las reservas netas siguen negativas.",
+    )
+    package = resolve_chapters_to_artifacts(
+        ChapterizedTranscript(chapters=[chapter]),
+        date(2025, 12, 11),
+        resolver,
+        _FetcherFake({"ar_bcra_reservas_brutas": _reservas_series()}),  # type: ignore[arg-type]
+    )
+    assert [item.resolution_status for item in package.items] == [
+        "quoted_only",
+        "verified_series",
+    ]
+    playbook = package.items[1]
+    assert playbook.playbook_id == "reservas_bcra_regimes"
+    assert playbook.chart_type == "single_line"
+    assert playbook.cue_index == 4
+    assert playbook.narrative is not None
+    assert playbook.narrative.mode == "term_comparison"
+    assert len(playbook.narrative.regime_bands) >= 2
+    assert playbook.editorial_note is not None
+    assert "brutas" in playbook.editorial_note
+
+
+def test_playbook_tope_dos_y_omite_fetch_roto() -> None:
+    chapter = _chapter(
+        _mention(3, "swap", "900 M"),
+        title="Coyuntura",
+        summary=(
+            "productos y servicios en dólares, reservas netas, "
+            "riesgo país y deuda, recesión del EMAE e inflación"
+        ),
+    )
+    resolver = _ResolverFake(
+        {
+            "swap": ChartResolutionDraft(
+                resolution_status="quoted_only",
+                rationale="Swap puntual.",
+            )
+        }
+    )
+    capped = resolve_chapters_to_artifacts(
+        ChapterizedTranscript(chapters=[chapter]),
+        date(2025, 12, 11),
+        resolver,
+        _FetcherFake(  # type: ignore[arg-type]
+            {
+                "ar_indec_ipc_mensual": _ipc_series(),
+                "ar_bcra_dolar_mayorista": _fx_series(),
+                "ar_bcra_reservas_brutas": _reservas_series(),
+            }
+        ),
+    )
+    assert capped.items[0].resolution_status == "quoted_only"
+    assert capped.items[0].playbook_id is None
+    assert _playbook_ids(capped.items) == [
+        "ipc_vs_dolar_base100",
+        "reservas_bcra_regimes",
+    ]
+
+    omitted = resolve_chapters_to_artifacts(
+        ChapterizedTranscript(chapters=[chapter]),
+        date(2025, 12, 11),
+        resolver,
+        _FetcherFake(  # type: ignore[arg-type]
+            {
+                "ar_indec_ipc_mensual": _ipc_series(),
+                "ar_bcra_dolar_mayorista": _fx_series(),
+            },
+            errors_by_id={"ar_bcra_reservas_brutas": ProviderError("HTTP 404 reservas")},
+        ),
+    )
+    assert _playbook_ids(omitted.items) == ["ipc_vs_dolar_base100"]
+    assert all(item.resolution_status != "fetch_error" for item in omitted.items)

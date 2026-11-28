@@ -23,6 +23,14 @@ ResolutionStatus = Literal["verified_series", "quoted_only", "fetch_error"]
 SeriesFrequency = Literal["daily", "monthly", "quarterly", "annual"]
 NarrativeMode = Literal["trend_with_callout", "ytd_focus", "term_comparison"]
 DeltaDirection = Literal["up", "down", "flat"]
+PlaybookId = Literal[
+    "ipc_trend",
+    "ipc_vs_dolar_base100",
+    "reservas_bcra_regimes",
+    "emae_activity",
+    "riesgo_pais_trend",
+]
+PlaybookChartType = Literal["single_line", "dual_base100", "bar_diverging"]
 
 
 class CatalogEntry(BaseModel):
@@ -64,6 +72,28 @@ class CatalogEntry(BaseModel):
         if self.fallback_series_id is not None and self.fallback_series_id.strip() == "":
             raise ValueError("fallback_series_id no puede ser vacío")
         return self
+
+
+class DataPoint(BaseModel):
+    """Punto fechado con valor numérico obligatorio (series de playbook)."""
+
+    model_config = ConfigDict(extra="forbid", strict=True, frozen=True)
+
+    obs_date: date
+    value: float
+
+
+class SecondarySeriesData(BaseModel):
+    """Segunda serie de un gráfico de playbook (por ejemplo dólar oficial en base 100)."""
+
+    model_config = ConfigDict(extra="forbid", strict=True, frozen=True)
+
+    label: str = Field(min_length=1, max_length=80)
+    series_key: str = Field(min_length=1)
+    provider: str = Field(min_length=1)
+    series_id: str = Field(min_length=1)
+    unit: str = Field(min_length=1)
+    points: list[DataPoint]
 
 
 class SeriesObservation(BaseModel):
@@ -206,6 +236,10 @@ class ChartArtifact(BaseModel):
     narrative: ChartNarrative | None = None
     error_message: str | None = None
     html_path: str | None = None
+    playbook_id: PlaybookId | None = None
+    chart_type: PlaybookChartType = "single_line"
+    secondary_series: SecondarySeriesData | None = None
+    editorial_note: str | None = Field(default=None, max_length=160)
 
     @model_validator(mode="after")
     def status_payload_is_consistent(self) -> Self:

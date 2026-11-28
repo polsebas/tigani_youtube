@@ -12,8 +12,10 @@ from tigani_broadcast.official_data_charts.models import (
     ChartArtifact,
     ChartNarrative,
     ChartsPackage,
+    DataPoint,
     EditorialKpi,
     RegimeBand,
+    SecondarySeriesData,
     SeriesData,
     SeriesMetrics,
     SeriesObservation,
@@ -382,3 +384,82 @@ def test_write_charts_package_copia_echarts_min_js(tmp_path: Path) -> None:
     assert all(item.html_path is not None for item in result.items)
     verified = Path(result.items[0].html_path or "").read_text(encoding="utf-8")
     assert '<script src="echarts.min.js">' in verified
+
+
+def test_render_dual_base100_leyenda_marca_y_escapa_nota() -> None:
+    observations = [
+        SeriesObservation(obs_date=date(2025, 1, 1), value=100.0),
+        SeriesObservation(obs_date=date(2025, 2, 1), value=110.0),
+    ]
+    artifact = _verified(observations=observations, label="Inflación vs. dólar oficial").model_copy(
+        update={
+            "playbook_id": "ipc_vs_dolar_base100",
+            "chart_type": "dual_base100",
+            "editorial_note": "Base 100 <img src=x>",
+            "secondary_series": SecondarySeriesData(
+                label="Dólar mayorista",
+                series_key="ar_bcra_dolar_mayorista",
+                provider="bcra",
+                series_id="4",
+                unit="base 100",
+                points=[
+                    DataPoint(obs_date=date(2025, 1, 1), value=100.0),
+                    DataPoint(obs_date=date(2025, 2, 1), value=121.0),
+                ],
+            ),
+        }
+    )
+    html = render_artifact_html(artifact, date(2025, 12, 11))
+    assert "editorial-note" in html
+    assert "Base 100 &lt;img src=x&gt;" in html
+    assert "<img src=x>" not in html
+    assert "Fuente: INDEC — IPC" in html
+    assert "Fuente: BCRA" in html
+    assert "min-width: 960px" in html
+    assert "max-width: 1920px" not in html
+    assert "ResizeObserver" in html
+    assert '<script src="echarts.min.js">' in html
+    option = build_echarts_option(
+        observations,
+        artifact.metrics,  # type: ignore[arg-type]
+        chart_type="dual_base100",
+        secondary_points=artifact.secondary_series.points if artifact.secondary_series else None,
+    )
+    assert option["legend"]["show"] is True
+    assert len(option["series"]) == 2
+    assert option["series"][0]["name"] == "IPC"
+    assert option["series"][0]["lineStyle"]["color"] == "#3db8a8"
+    assert option["series"][1]["name"] == "Dólar mayorista"
+    assert option["series"][1]["lineStyle"]["color"] == "#e8b84a"
+    assert option["series"][0]["markLine"]["data"][0]["yAxis"] == 100
+    assert option["series"][0]["data"][0]["label"]["show"] is True
+    assert option["series"][0]["data"][-1]["label"]["show"] is True
+
+
+def test_render_bar_diverging_colores_y_eje_cero() -> None:
+    observations = [
+        SeriesObservation(obs_date=date(2025, 1, 1), value=1.5),
+        SeriesObservation(obs_date=date(2025, 2, 1), value=-0.8),
+    ]
+    artifact = _verified(observations=observations, label="Actividad económica (EMAE)").model_copy(
+        update={
+            "playbook_id": "emae_activity",
+            "chart_type": "bar_diverging",
+            "editorial_note": "Variación mensual",
+        }
+    )
+    html = render_artifact_html(artifact, date(2025, 12, 11))
+    assert "Variación mensual" in html
+    assert '"type": "bar"' in html or '"type":"bar"' in html
+    option = build_echarts_option(
+        observations,
+        artifact.metrics,  # type: ignore[arg-type]
+        chart_type="bar_diverging",
+    )
+    assert option["series"][0]["type"] == "bar"
+    assert option["series"][0]["data"][0]["itemStyle"]["color"] == "#3db8a8"
+    assert option["series"][0]["data"][0]["label"]["position"] == "top"
+    assert option["series"][0]["data"][1]["itemStyle"]["color"] == "#e57373"
+    assert option["series"][0]["data"][1]["label"]["position"] == "bottom"
+    assert option["series"][0]["markLine"]["data"][0]["yAxis"] == 0
+    assert option["yAxis"]["min"] < 0 < option["yAxis"]["max"]
